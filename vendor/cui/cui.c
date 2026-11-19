@@ -9701,6 +9701,7 @@ static void cui__table_close_row(cui_ctx *ui, struct cui_table_build *t) {
         t->col++;
     }
     cui__close(ui);   /* row */
+    cui_pop_id(ui);
     t->in_row = false;
 }
 
@@ -9828,8 +9829,7 @@ bool cui_table_row_ex(cui_ctx *ui, bool selected, float opacity) {
     cui__open(ui, row);
     t->in_row = true;
     t->col = 0;
-    cui_push_id_int(ui, ri);
-    cui_pop_id(ui);
+    cui_push_id_int(ui, ri);   /* row scope: per-row controls must not share ids */
     ui->last_id = rid;
     return r.clicked;
 }

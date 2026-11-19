@@ -7,7 +7,7 @@
 #include <string.h>
 
 static void print_help(void) {
-    printf("greed — download manager\n"
+    printf("greed: download manager\n"
            "\n"
            "Usage:\n"
            "  greed                     open the GUI\n"

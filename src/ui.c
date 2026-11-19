@@ -52,6 +52,7 @@ typedef struct {
     cui_date sched_date;
     int sched_hour;
     int sched_min;
+    int sched_preset;
     char filter[128];
     bool focus_search;
     char selected[32];
@@ -324,7 +325,7 @@ static void checksum_tick(App *a) {
 static void notify_send(const char *name) {
     pid_t pid = fork();
     if (pid == 0) {
-        execlp("notify-send", "notify-send", "Greed — download complete", name, (char *)NULL);
+        execlp("notify-send", "notify-send", "Greed: download complete", name, (char *)NULL);
         _exit(127);
     }
     if (pid > 0) waitpid(pid, NULL, 0);
@@ -574,15 +575,45 @@ static void open_add(App *a) {
     a->add_conn = a->cfg.max_concurrent;
 }
 
-static void open_schedule(App *a) {
-    a->show_schedule = true;
-    a->sched_url[0] = 0;
-    time_t due = time(NULL) + 3600;
+static void set_sched_due(App *a, time_t due) {
     struct tm t;
     localtime_r(&due, &t);
     a->sched_date = (cui_date){t.tm_year + 1900, t.tm_mon + 1, t.tm_mday};
     a->sched_hour = t.tm_hour;
     a->sched_min = t.tm_min;
+}
+
+static time_t next_clock(int hour) {
+    time_t now = time(NULL);
+    struct tm t;
+    localtime_r(&now, &t);
+    t.tm_hour = hour;
+    t.tm_min = 0;
+    t.tm_sec = 0;
+    t.tm_isdst = -1;
+    time_t due = mktime(&t);
+    if (due <= now) {
+        t.tm_mday += 1;
+        t.tm_isdst = -1;
+        due = mktime(&t);
+    }
+    return due;
+}
+
+/* 0 in 15 min, 1 in 1 hour, 2 at 22:00, 3 at 02:00 (the next occurrence) */
+static time_t sched_preset_due(int preset) {
+    time_t now = time(NULL);
+    if (preset == 0) return now + 15 * 60;
+    if (preset == 1) return now + 3600;
+    return next_clock(preset == 2 ? 22 : 2);
+}
+
+static void open_schedule(App *a) {
+    a->show_schedule = true;
+    a->sched_url[0] = 0;
+    a->sched_preset = 1;
+    time_t due = sched_preset_due(1);
+    set_sched_due(a, due);
 }
 
 static void open_settings(App *a) {
@@ -955,7 +986,7 @@ static void details(App *a, cui_ctx *ui) {
             fmt_speed(up, sizeof up, d->up_speed);
             unsigned long long secs;
             if (download_eta(d, &secs)) fmt_eta(eta, sizeof eta, secs);
-            else snprintf(eta, sizeof eta, "—");
+            else snprintf(eta, sizeof eta, "n/a");
             kv(ui, "Speed", speed);
             kv(ui, "Upload", up);
             kv(ui, "ETA", eta);
@@ -1217,7 +1248,7 @@ static void download_table(App *a, cui_ctx *ui) {
             cui_table_cell(ui); {
                 char size[32];
                 if (d->total) fmt_bytes(size, sizeof size, d->total);
-                else snprintf(size, sizeof size, "—");
+                else snprintf(size, sizeof size, "n/a");
                 cui_text(ui, size, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
                          .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
             }
@@ -1234,7 +1265,7 @@ static void download_table(App *a, cui_ctx *ui) {
             cui_table_cell(ui); {
                 char speed[32];
                 if (!strcmp(d->status, "active")) fmt_speed(speed, sizeof speed, d->down_speed);
-                else snprintf(speed, sizeof speed, "—");
+                else snprintf(speed, sizeof speed, "n/a");
                 cui_text(ui, speed, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
                          .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
             }
@@ -1242,7 +1273,7 @@ static void download_table(App *a, cui_ctx *ui) {
                 char eta[32];
                 unsigned long long secs;
                 if (download_eta(d, &secs)) fmt_eta(eta, sizeof eta, secs);
-                else snprintf(eta, sizeof eta, "—");
+                else snprintf(eta, sizeof eta, "n/a");
                 cui_text(ui, eta, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
                          .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
             }
@@ -1265,103 +1296,126 @@ static void download_table(App *a, cui_ctx *ui) {
     a->suppress_click = false;
 }
 
-static int count_status(const App *a, const char *status) {
-    int n = 0;
-    for (int i = 0; i < a->count; i++)
-        if (!strcmp(a->items[i].status, status)) n++;
-    return n;
-}
-
-static bool disk_usage(const char *path, double *used_gb, double *total_gb,
-                       unsigned long long *free_bytes) {
+static bool disk_usage(const char *path, unsigned long long *free_bytes,
+                       unsigned long long *total_bytes) {
     struct statvfs s;
     if (statvfs(path, &s) != 0 || s.f_blocks == 0 || s.f_frsize == 0) return false;
-    unsigned long long total = (unsigned long long)s.f_blocks * s.f_frsize;
-    unsigned long long avail = (unsigned long long)s.f_bavail * s.f_frsize;
-    *total_gb = (double)total / (1024.0 * 1024.0 * 1024.0);
-    *used_gb = (double)(total - avail) / (1024.0 * 1024.0 * 1024.0);
-    *free_bytes = avail;
+    *total_bytes = (unsigned long long)s.f_blocks * s.f_frsize;
+    *free_bytes = (unsigned long long)s.f_bavail * s.f_frsize;
     return true;
+}
+
+static void fmt_disk(char *out, size_t cap, unsigned long long bytes) {
+    double gb = (double)bytes / (1024.0 * 1024.0 * 1024.0);
+    if (gb >= 1000.0) snprintf(out, cap, "%.2f TB", gb / 1024.0);
+    else if (gb >= 100.0) snprintf(out, cap, "%.0f GB", gb);
+    else snprintf(out, cap, "%.1f GB", gb);
 }
 
 static void stats_page(App *a, cui_ctx *ui, float opacity) {
     cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14, .gap = 12,
                .opacity = opacity) {
         cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
-            cui_column(ui, .gap = 2) {
-                cui_heading(ui, "Statistics", 2);
-                cui_muted(ui, a->connected ? "Live from the aria2 engine."
-                                           : "Engine offline — showing the last samples.");
-            }
+            cui_heading(ui, "Statistics", 2);
             cui_spacer(ui);
-            if (a->connected)
+            if (a->connected) {
                 cui_badge(ui, "Live", .tone = CUI_TONE_SUCCESS, .dot = true);
+            } else {
+                cui_text(ui, "aria2 is offline", .size = 12, .color = CUI_COLOR_DANGER);
+                if (cui_button(ui, "Start aria2", .size = CUI_SIZE_SM)) start_engine(a);
+            }
         }
-        cui_row(ui, .width = CUI_FILL, .gap = 10, .align = CUI_ALIGN_STRETCH) {
-            char v[32];
-            snprintf(v, sizeof v, "%d", count_status(a, "active"));
-            cui_metric(ui, "Active", v, .icon = CUI_ICON_ACTIVITY);
-            snprintf(v, sizeof v, "%d", count_status(a, "waiting") + count_status(a, "paused"));
-            cui_metric(ui, "Waiting", v, .icon = CUI_ICON_CLOCK);
-            snprintf(v, sizeof v, "%d", count_status(a, "complete"));
-            cui_metric(ui, "Complete", v, .icon = CUI_ICON_CIRCLE_CHECK);
-        }
-        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
-            cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
-                cui_text(ui, "Transfer speed", .font = CUI_FONT_MEDIUM, .size = 14);
+        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 12) {
+            cui_row(ui, .width = CUI_FILL, .gap = 14, .align = CUI_ALIGN_CENTER) {
+                cui_column(ui, .gap = 2) {
+                    cui_text(ui, "Throughput", .font = CUI_FONT_MEDIUM, .size = 14);
+                    cui_text(ui, "Last 60 seconds · KB/s", .size = 11,
+                             .color = CUI_COLOR_TEXT_SECONDARY);
+                }
                 cui_spacer(ui);
-                cui_text(ui, "KB/s · last minute", .size = 11, .color = CUI_COLOR_TEXT_MUTED);
+                char down[32] = "0 B/s", up[32] = "0 B/s";
+                if (a->connected) {
+                    fmt_speed(down, sizeof down, a->gs.down_speed);
+                    fmt_speed(up, sizeof up, a->gs.up_speed);
+                }
+                cui_row(ui, .gap = 4, .align = CUI_ALIGN_CENTER) {
+                    cui_icon(ui, CUI_ICON_ARROW_DOWN, 14, CUI_COLOR_ACCENT_STRONG);
+                    cui_text(ui, down, .size = 12, .tabular = true, .nowrap = true);
+                }
+                cui_row(ui, .gap = 4, .align = CUI_ALIGN_CENTER) {
+                    cui_icon(ui, CUI_ICON_ARROW_UP, 14, CUI_COLOR_SERIES(1));
+                    cui_text(ui, up, .size = 12, .tabular = true, .nowrap = true);
+                }
             }
             if (a->hist_count > 1) {
+                char peak_label[48], peak_detail[24];
+                int peak = 0;
+                for (int i = 1; i < a->hist_count; i++)
+                    if (a->hist_down[i] > a->hist_down[peak]) peak = i;
+                cui_chart_annotation note = {0};
+                if (a->hist_down[peak] > 0.0f) {
+                    char speed[32];
+                    fmt_speed(speed, sizeof speed,
+                              (unsigned long long)(a->hist_down[peak] * 1024.0f));
+                    snprintf(peak_label, sizeof peak_label, "Peak %s", speed);
+                    snprintf(peak_detail, sizeof peak_detail, "%ds ago",
+                             (int)((a->hist_count - 1 - peak) * 0.8));
+                    note = (cui_chart_annotation){.kind = CUI_ANNOTATION_POINT,
+                                                  .x = peak,
+                                                  .y = a->hist_down[peak],
+                                                  .label = peak_label,
+                                                  .detail = peak_detail};
+                }
                 cui_series series[2] = {
                     {"Download", a->hist_down, a->hist_count, CUI_COLOR_ACCENT_STRONG},
                     {"Upload", a->hist_up, a->hist_count, CUI_COLOR_SERIES(1)},
                 };
-                cui_line_chart(ui, "speed-history", series, 2, .height = 170,
+                cui_line_chart(ui, "speed-history", series, 2, .height = 260,
                                .labels = a->hist_labels, .label_count = a->hist_count,
-                               .smooth = true, .area = true);
+                               .smooth = true, .area = true,
+                               .annotations = note.label ? &note : NULL,
+                               .annotation_count = note.label ? 1 : 0);
             } else {
-                cui_muted(ui, "Collecting samples…");
+                cui_row(ui, .width = CUI_FILL, .height = CUI_PX(260), .gap = 10,
+                        .align = CUI_ALIGN_CENTER, .justify = CUI_JUSTIFY_CENTER) {
+                    cui_icon(ui, CUI_ICON_CHART_LINE, 28, CUI_COLOR_TEXT_MUTED);
+                    cui_column(ui, .gap = 2) {
+                        cui_text(ui, "Waiting for the first samples",
+                                 .font = CUI_FONT_MEDIUM, .size = 13);
+                        cui_text(ui, "aria2 reports speed about once a second.", .size = 12,
+                                 .color = CUI_COLOR_TEXT_SECONDARY);
+                    }
+                }
             }
         }
-        cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_STRETCH) {
-            cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 8) {
-                cui_text(ui, "Downloads by state", .font = CUI_FONT_MEDIUM, .size = 14);
-                float values[5] = {
-                    (float)count_status(a, "active"),
-                    (float)count_status(a, "waiting"),
-                    (float)count_status(a, "paused"),
-                    (float)count_status(a, "complete"),
-                    (float)(count_status(a, "error") + count_status(a, "removed")),
-                };
-                static const char *labels[5] = {"Active", "Waiting", "Paused", "Complete",
-                                                "Failed"};
-                float total = 0;
-                for (int i = 0; i < 5; i++) total += values[i];
-                if (total > 0)
-                    cui_donut_chart(ui, "state-donut", values, labels, 5, .height = 170);
-                else
-                    cui_muted(ui, "No downloads yet.");
+        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
+            cui_row(ui, .width = CUI_FILL, .gap = 10, .align = CUI_ALIGN_CENTER) {
+                cui_icon(ui, CUI_ICON_FOLDER, 16, CUI_COLOR_TEXT_SECONDARY);
+                cui_text(ui, "Download folder", .font = CUI_FONT_MEDIUM, .size = 13,
+                         .nowrap = true);
+                cui_text(ui, a->cfg.download_dir, .size = 11, .color = CUI_COLOR_TEXT_SECONDARY,
+                         .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .nowrap = true);
+                if (cui_button(ui, "Open folder", .size = CUI_SIZE_SM,
+                               .icon = CUI_ICON_FOLDER_OPEN))
+                    open_folder(a->cfg.download_dir);
             }
-            cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
-                cui_text(ui, "Disk space", .font = CUI_FONT_MEDIUM, .size = 14);
-                double used = 0, total = 0;
-                unsigned long long free_bytes = 0;
-                if (disk_usage(a->cfg.download_dir, &used, &total, &free_bytes)) {
-                    float used_gb = (float)((long long)(used * 10.0) / 10.0);
-                    float total_gb = (float)((long long)(total * 10.0) / 10.0);
-                    cui_meter(ui, "Used", used_gb, total_gb, "GB");
-                    char free_text[32];
-                    fmt_bytes(free_text, sizeof free_text, free_bytes);
-                    cui_row(ui, .width = CUI_FILL) {
-                        cui_text(ui, "Free", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
-                        cui_spacer(ui);
-                        cui_text(ui, free_text, .size = 12, .tabular = true);
-                    }
-                } else {
-                    cui_muted(ui, "Cannot read the download folder.");
+            unsigned long long free_bytes = 0, total_bytes = 0;
+            if (disk_usage(a->cfg.download_dir, &free_bytes, &total_bytes)) {
+                char free_text[32], total_text[32], line[96];
+                fmt_disk(free_text, sizeof free_text, free_bytes);
+                fmt_disk(total_text, sizeof total_text, total_bytes);
+                snprintf(line, sizeof line, "%s free of %s", free_text, total_text);
+                double used = total_bytes ? 1.0 - (double)free_bytes / (double)total_bytes : 0;
+                cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_CENTER) {
+                    cui_progress(ui, (float)used, .height = 8, .width = CUI_FILL,
+                                 .tone = used > 0.9 ? CUI_TONE_DANGER :
+                                         used > 0.75 ? CUI_TONE_WARNING : CUI_TONE_NEUTRAL);
+                    cui_text(ui, line, .size = 11, .color = CUI_COLOR_TEXT_SECONDARY,
+                             .nowrap = true, .tabular = true);
                 }
-                cui_muted(ui, a->cfg.download_dir);
+            } else {
+                cui_text(ui, "Cannot read the download folder.", .size = 12,
+                         .color = CUI_COLOR_DANGER);
             }
         }
     }
@@ -1404,24 +1458,36 @@ static void sched_name(const char *url, char *out, size_t cap) {
 }
 
 static void fmt_sched_time(long long due, char *out, size_t cap) {
+    time_t nowt = time(NULL);
     time_t t = (time_t)due;
-    struct tm tm;
+    struct tm tm, now, tomorrow;
     localtime_r(&t, &tm);
-    strftime(out, cap, "%a %d %b · %H:%M", &tm);
+    localtime_r(&nowt, &now);
+    if (tm.tm_year == now.tm_year && tm.tm_yday == now.tm_yday) {
+        strftime(out, cap, "Today at %H:%M", &tm);
+        return;
+    }
+    time_t tom = nowt + 86400;
+    localtime_r(&tom, &tomorrow);
+    if (tm.tm_year == tomorrow.tm_year && tm.tm_yday == tomorrow.tm_yday)
+        strftime(out, cap, "Tomorrow at %H:%M", &tm);
+    else
+        strftime(out, cap, "%a %d %b at %H:%M", &tm);
 }
 
 static void fmt_countdown(long long secs, char *out, size_t cap) {
     if (secs <= 0) {
         snprintf(out, cap, "now");
-    } else if (secs < 60) {
-        snprintf(out, cap, "in <1m");
-    } else if (secs < 3600) {
-        snprintf(out, cap, "in %lldm", secs / 60);
-    } else if (secs < 86400) {
-        snprintf(out, cap, "in %lldh %02lldm", secs / 3600, (secs % 3600) / 60);
-    } else {
-        snprintf(out, cap, "in %lldd %lldh", secs / 86400, (secs % 86400) / 3600);
+        return;
     }
+    if (secs < 60) {
+        snprintf(out, cap, "in <1m");
+        return;
+    }
+    long long mins = (secs + 59) / 60;   /* round up: 59m 40s reads better as 1h 00m */
+    if (mins < 60) snprintf(out, cap, "in %lldm", mins);
+    else if (mins < 1440) snprintf(out, cap, "in %lldh %02lldm", mins / 60, mins % 60);
+    else snprintf(out, cap, "in %lldd %lldh", mins / 1440, (mins % 1440) / 60);
 }
 
 static void schedule_page(App *a, cui_ctx *ui, float opacity) {
@@ -1432,7 +1498,7 @@ static void schedule_page(App *a, cui_ctx *ui, float opacity) {
             cui_column(ui, .gap = 2) {
                 cui_heading(ui, "Scheduled downloads", 2);
                 cui_text(ui, "Queue links to start at a set time. Times are local.",
-                         .size = 12, .color = CUI_COLOR_TEXT_MUTED);
+                         .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
             }
             cui_spacer(ui);
             if (cui_button(ui, "Schedule download", .icon = CUI_ICON_CALENDAR,
@@ -1457,7 +1523,7 @@ static void schedule_page(App *a, cui_ctx *ui, float opacity) {
                 cui_icon(ui, CUI_ICON_CALENDAR, 36, CUI_COLOR_TEXT_MUTED);
                 cui_text(ui, "No scheduled downloads", .font = CUI_FONT_MEDIUM, .size = 15);
                 cui_text(ui, "Pick a link and a start time; Greed adds it to aria2 for you.",
-                         .size = 12, .color = CUI_COLOR_TEXT_MUTED);
+                         .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
                 if (cui_button(ui, "Schedule a download", .icon = CUI_ICON_CALENDAR))
                     open_schedule(a);
             }
@@ -1471,9 +1537,21 @@ static void schedule_page(App *a, cui_ctx *ui, float opacity) {
             };
             int n = a->sched_count;
             int remove_idx = -1;
+            /* soonest first: the list is small, so insertion sort is enough */
+            int order[GREED_MAX_SCHEDULED];
+            for (int i = 0; i < n; i++) order[i] = i;
+            for (int i = 1; i < n; i++) {
+                int k = order[i], j = i - 1;
+                while (j >= 0 && a->sched[order[j]].due > a->sched[k].due) {
+                    order[j + 1] = order[j];
+                    j--;
+                }
+                order[j + 1] = k;
+            }
             cui_table(ui, "scheduled", cols, 5, .height = CUI_FILL, .striped = true,
                       .compact = true) {
-                for (int i = 0; i < n; i++) {
+                for (int r = 0; r < n; r++) {
+                    int i = order[r];
                     GreedScheduled *s = &a->sched[i];
                     char name[256], when[64], in[48];
                     sched_name(s->url, name, sizeof name);
@@ -1492,7 +1570,7 @@ static void schedule_page(App *a, cui_ctx *ui, float opacity) {
                     cui_table_cell(ui);
                     {
                         const char *label = "Scheduled";
-                        cui_color tone = CUI_COLOR_TEXT_MUTED;
+                        cui_color tone = CUI_COLOR_TEXT_SECONDARY;
                         if (overdue && a->connected) {
                             label = "Starting…";
                             tone = CUI_COLOR_ACCENT;
@@ -1519,7 +1597,7 @@ static void schedule_page(App *a, cui_ctx *ui, float opacity) {
             }
         }
         cui_text(ui, "Greed must be running at the scheduled time.", .size = 11,
-                 .color = CUI_COLOR_TEXT_MUTED);
+                 .color = CUI_COLOR_TEXT_SECONDARY);
     }
 }
 
@@ -1596,7 +1674,7 @@ static void add_dialog(App *a, cui_ctx *ui) {
     cui_dialog(ui, "Add download", &a->show_add, .width = 560) {
         cui_label(ui, "Links");
         cui_textarea(ui, "links", a->add_urls, sizeof a->add_urls,
-                     .placeholder = "One link per line — http, magnet, or .torrent",
+                     .placeholder = "One link per line: http, magnet, or .torrent",
                      .height = 104);
         cui_label(ui, "Save to");
         cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
@@ -1669,36 +1747,36 @@ static void schedule_dialog(App *a, cui_ctx *ui) {
         cui_label(ui, "Link");
         cui_input(ui, "sched-url", a->sched_url, sizeof a->sched_url,
                   .placeholder = "https://example.com/file.iso or magnet link");
+        cui_label(ui, "Start");
+        static const char *presets[] = {"In 15 min", "In 1 hour", "At 22:00", "At 02:00"};
+        cui_row(ui, .width = CUI_FILL, .gap = 6) {
+            for (int i = 0; i < 4; i++) {
+                bool on = a->sched_preset == i;
+                if (cui_chip(ui, presets[i], &on) && on) {
+                    a->sched_preset = i;
+                    set_sched_due(a, sched_preset_due(i));
+                }
+            }
+        }
         cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_END) {
-            cui_date_picker(ui, "sched-date", &a->sched_date, .label = "Date",
-                            .width = CUI_PX(190));
-            char hour_buf[24][3];
-            const char *hours[24];
-            for (int i = 0; i < 24; i++) {
-                snprintf(hour_buf[i], sizeof hour_buf[i], "%02d", i);
-                hours[i] = hour_buf[i];
-            }
-            char min_buf[60][3];
-            const char *minutes[60];
-            for (int i = 0; i < 60; i++) {
-                snprintf(min_buf[i], sizeof min_buf[i], "%02d", i);
-                minutes[i] = min_buf[i];
-            }
-            cui_select(ui, "sched-hour", hours, 24, &a->sched_hour, .label = "Hour",
-                       .width = CUI_PX(90));
-            cui_select(ui, "sched-minute", minutes, 60, &a->sched_min, .label = "Minute",
-                       .width = CUI_PX(90));
+            if (cui_date_picker(ui, "sched-date", &a->sched_date, .label = "Date",
+                                .width = CUI_PX(200)))
+                a->sched_preset = -1;
+            if (cui_time_picker(ui, "sched-time", &a->sched_hour, &a->sched_min,
+                                .label = "Time", .minute_step = 1, .width = CUI_PX(130)))
+                a->sched_preset = -1;
         }
         if (due <= now) {
             cui_text(ui, "Choose a time in the future.", .size = 12,
                      .color = CUI_COLOR_DANGER);
         } else if (when[0]) {
-            char line[128];
-            snprintf(line, sizeof line, "Starts %s", when);
+            char in[48], line[160];
+            fmt_countdown((long long)(due - now), in, sizeof in);
+            snprintf(line, sizeof line, "Starts %s (%s)", when, in);
             cui_text(ui, line, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
         }
-        cui_text(ui, "Greed must be running when the time comes.", .size = 11,
-                 .color = CUI_COLOR_TEXT_MUTED);
+        cui_text(ui, "Times are local. Greed must be running when a download starts.",
+                 .size = 11, .color = CUI_COLOR_TEXT_SECONDARY);
         cui_dialog_footer(ui) {
             if (cui_button(ui, "Cancel", .variant = CUI_BUTTON_GHOST))
                 a->show_schedule = false;
@@ -1954,13 +2032,13 @@ static void info_dialog(App *a, cui_ctx *ui) {
         kv(ui, "Progress", pct);
         char size[32], done[32], speed[32], up[32], eta[32], num[32];
         if (d->total) fmt_bytes(size, sizeof size, d->total);
-        else snprintf(size, sizeof size, "—");
+        else snprintf(size, sizeof size, "n/a");
         fmt_bytes(done, sizeof done, d->completed);
         fmt_speed(speed, sizeof speed, d->down_speed);
         fmt_speed(up, sizeof up, d->up_speed);
         unsigned long long secs;
         if (download_eta(d, &secs)) fmt_eta(eta, sizeof eta, secs);
-        else snprintf(eta, sizeof eta, "—");
+        else snprintf(eta, sizeof eta, "n/a");
         kv(ui, "Size", size);
         kv(ui, "Downloaded", done);
         kv(ui, "Speed", speed);

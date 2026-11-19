@@ -11,26 +11,27 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
 
 ## Features
 
-- **aria2 core** — HTTP/HTTPS/FTP, BitTorrent, Metalink; resume, multi-connection, checksums
-- **Bundled aria2** — `vendor/aria2/` ships with the repo; falls back to a system `aria2c`
-- **Frameless window** — the title bar is drawn inside the app, with drag, minimize, maximize and edge resize
-- **GUI** — Witch's Ink theme, sidebar tabs (All/Active/Waiting/Stopped/Complete), a searchable
+- **aria2 core**: HTTP/HTTPS/FTP, BitTorrent, Metalink; resume, multi-connection, checksums
+- **Bundled aria2**: `vendor/aria2/` ships with the repo; falls back to a system `aria2c`
+- **Frameless window**: the title bar is drawn inside the app, with drag, minimize, maximize and edge resize
+- **GUI**: Witch's Ink theme, sidebar tabs (All/Active/Waiting/Stopped/Complete), a searchable
   download table with progress, speed, ETA and status, a per-download details pane and a live
   transfer sparkline in the sidebar
-- **Bulk actions** — check several downloads and pause, resume or remove them in one go
-- **CLI** — `greed add/list/status/pause/resume/remove/stats/shutdown`, with `--json` for
+- **Bulk actions**: check several downloads and pause, resume or remove them in one go
+- **CLI**: `greed add/list/status/pause/resume/remove/stats/shutdown`, with `--json` for
   `list` and `status`
-- **Torrents** — magnet links and `.torrent` files (file contents are base64-encoded for aria2)
-- **Bandwidth control** — global download/upload caps in KB/s, applied to the running engine,
+- **Torrents**: magnet links and `.torrent` files (file contents are base64-encoded for aria2)
+- **Bandwidth control**: global download/upload caps in KB/s, applied to the running engine,
   with a live throughput chart that draws the cap on the line
-- **Seeding** — keep sharing completed torrents up to a chosen ratio
-- **Statistics** — live transfer chart, downloads-by-state donut and a disk-space meter
-- **Scheduled downloads** — pick a date and time; Greed hands the link to aria2 when it is due
-- **Settings** — General, Bandwidth and Torrents tabs with sliders, switches and limits
-- **Clipboard monitoring** — offers a toast when a link is copied (toggleable)
-- **Notifications** — desktop notification when a download completes (toggleable)
-- **Session persistence** — the queue survives restarts through aria2's session file
-- **Live stats** — global and per-download speed, size, ETA, connections, seeders
+- **Seeding**: keep sharing completed torrents up to a chosen ratio
+- **Statistics**: 60-second throughput chart with peak marker, live download/upload speeds and a
+  download-folder card with free space and an Open folder button
+- **Scheduled downloads**: presets or an exact date and time; Greed hands the link to aria2 when it is due
+- **Settings**: General, Bandwidth and Torrents tabs with sliders, switches and limits
+- **Clipboard monitoring**: offers a toast when a link is copied (toggleable)
+- **Notifications**: desktop notification when a download completes (toggleable)
+- **Session persistence**: the queue survives restarts through aria2's session file
+- **Live stats**: global and per-download speed, size, ETA, connections, seeders
 
 ## Requirements
 
