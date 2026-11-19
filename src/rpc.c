@@ -175,8 +175,11 @@ bool aria2_spawn(const Config *cfg) {
     snprintf(ssess, sizeof ssess, "--save-session=%s", session);
     snprintf(sdl, sizeof sdl, "--max-overall-download-limit=%d", cfg->max_download_limit * 1024);
     snprintf(sul, sizeof sul, "--max-overall-upload-limit=%d", cfg->max_upload_limit * 1024);
-    snprintf(sseed, sizeof sseed, "--seed-ratio=%.2f",
-             cfg->seed_after_complete ? (double)cfg->seed_ratio : 0.0);
+    /* seed-ratio 0 means seed forever in aria2, so disabling needs seed-time. */
+    if (cfg->seed_after_complete)
+        snprintf(sseed, sizeof sseed, "--seed-ratio=%.2f", (double)cfg->seed_ratio);
+    else
+        snprintf(sseed, sizeof sseed, "--seed-time=0");
 
     const char *argv[20];
     int n = 0;
@@ -224,11 +227,37 @@ bool aria2_apply_options(Rpc *r, const Config *cfg) {
     json_object_object_add(opts, "max-overall-download-limit", json_object_new_string(v));
     snprintf(v, sizeof v, "%lld", (long long)cfg->max_upload_limit * 1024);
     json_object_object_add(opts, "max-overall-upload-limit", json_object_new_string(v));
-    snprintf(v, sizeof v, "%.2f", cfg->seed_after_complete ? (double)cfg->seed_ratio : 0.0);
-    json_object_object_add(opts, "seed-ratio", json_object_new_string(v));
+    if (cfg->seed_after_complete) {
+        snprintf(v, sizeof v, "%.2f", (double)cfg->seed_ratio);
+        json_object_object_add(opts, "seed-ratio", json_object_new_string(v));
+        json_object_object_add(opts, "seed-time", json_object_new_string(""));
+    } else {
+        json_object_object_add(opts, "seed-time", json_object_new_string("0"));
+    }
     struct json_object *params = json_object_new_array();
     json_object_array_add(params, opts);
     struct json_object *res = rpc_call(r, "aria2.changeGlobalOption", params);
+    if (!res) return false;
+    json_object_put(res);
+    return true;
+}
+
+/* Global options only affect downloads added later, so active torrents need
+ * the seed settings again. */
+bool aria2_apply_seed_options(Rpc *r, const char *gid, const Config *cfg) {
+    struct json_object *opts = json_object_new_object();
+    if (cfg->seed_after_complete) {
+        char v[32];
+        snprintf(v, sizeof v, "%.2f", (double)cfg->seed_ratio);
+        json_object_object_add(opts, "seed-ratio", json_object_new_string(v));
+        json_object_object_add(opts, "seed-time", json_object_new_string(""));
+    } else {
+        json_object_object_add(opts, "seed-time", json_object_new_string("0"));
+    }
+    struct json_object *params = json_object_new_array();
+    json_object_array_add(params, json_object_new_string(gid));
+    json_object_array_add(params, opts);
+    struct json_object *res = rpc_call(r, "aria2.changeOption", params);
     if (!res) return false;
     json_object_put(res);
     return true;

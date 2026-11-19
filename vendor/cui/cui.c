@@ -9829,6 +9829,7 @@ bool cui_table_row(cui_ctx *ui, bool selected) {
     t->col = 0;
     cui_push_id_int(ui, ri);
     cui_pop_id(ui);
+    ui->last_id = rid;
     return r.clicked;
 }
 
@@ -47164,7 +47165,7 @@ bool cui_context_menu_begin(cui_ctx *ui, const char *id) {
         if (p) { p->at_mouse = true; p->mouse.x = ui->mx; p->mouse.y = ui->my; }
     }
     if (!cui__popup_get(ui, pid, false)) return false;
-    return cui__popup_begin(ui, pid, anchor, CUI_PLACE_BOTTOM_START, 0, 6, 0, true);
+    return cui__popup_begin(ui, pid, anchor, CUI_PLACE_BOTTOM_START, 180, 6, 0, true);
 }
 
 void cui_context_menu_end(cui_ctx *ui) { cui__popup_end(ui); }

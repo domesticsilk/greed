@@ -48,6 +48,9 @@ void config_defaults(Config *c) {
     c->auto_start_aria2 = true;
     c->clipboard_monitor = true;
     c->notify_on_complete = true;
+    c->verify_after_complete = true;
+    c->motion_speed = 1.0f;
+    snprintf(c->theme, sizeof c->theme, "Dark Mono");
 }
 
 static const char *jstr(struct json_object *v, const char *key) {
@@ -104,6 +107,13 @@ void config_load(Config *c) {
             c->auto_start_aria2 = jbool(v, "auto_start_aria2", c->auto_start_aria2);
             c->clipboard_monitor = jbool(v, "clipboard_monitor", c->clipboard_monitor);
             c->notify_on_complete = jbool(v, "notify_on_complete", c->notify_on_complete);
+            c->verify_after_complete =
+                jbool(v, "verify_after_complete", c->verify_after_complete);
+            c->motion_speed = (float)jdouble(v, "motion_speed", c->motion_speed);
+            if (c->motion_speed < 0.5f) c->motion_speed = 0.5f;
+            if (c->motion_speed > 2.0f) c->motion_speed = 2.0f;
+            const char *theme = jstr(v, "theme");
+            if (theme) snprintf(c->theme, sizeof c->theme, "%s", theme);
             json_object_put(v);
         }
     }
@@ -125,6 +135,10 @@ bool config_save(const Config *c) {
     json_object_object_add(v, "auto_start_aria2", json_object_new_boolean(c->auto_start_aria2));
     json_object_object_add(v, "clipboard_monitor", json_object_new_boolean(c->clipboard_monitor));
     json_object_object_add(v, "notify_on_complete", json_object_new_boolean(c->notify_on_complete));
+    json_object_object_add(v, "verify_after_complete",
+                           json_object_new_boolean(c->verify_after_complete));
+    json_object_object_add(v, "motion_speed", json_object_new_double(c->motion_speed));
+    json_object_object_add(v, "theme", json_object_new_string(c->theme));
     const char *text = json_object_to_json_string_ext(v, JSON_C_TO_STRING_PRETTY);
     FILE *f = fopen(config_path(), "w");
     bool ok = false;

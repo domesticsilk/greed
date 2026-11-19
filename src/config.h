@@ -14,6 +14,9 @@ typedef struct {
     bool auto_start_aria2;
     bool clipboard_monitor;
     bool notify_on_complete;
+    bool verify_after_complete;
+    float motion_speed;        /* 1 = normal, higher is faster */
+    char theme[48];
 } Config;
 
 void config_defaults(Config *c);
