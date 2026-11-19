@@ -1,0 +1,25 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config / state (local)
+~/.config/greed/
+~/.local/state/greed/
+
+# Build artifacts
+*.AppImage
+*.deb
+*.rpm
+*.pkg.tar.zst
+*.tar.gz
