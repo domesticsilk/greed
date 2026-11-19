@@ -9799,7 +9799,7 @@ bool cui_table_begin_ex(cui_ctx *ui, const char *id_str, const cui_table_column 
     return true;
 }
 
-bool cui_table_row(cui_ctx *ui, bool selected) {
+bool cui_table_row_ex(cui_ctx *ui, bool selected, float opacity) {
     struct cui_table_build *t = ui->building.table;
     if (!t) return false;
     cui__table_close_row(ui, t);
@@ -9822,6 +9822,7 @@ bool cui_table_row(cui_ctx *ui, bool selected) {
     if (selected) bg = CUI_C(ui, ACCENT_SUBTLE);
     else bg = cui_mix(bg, CUI_C(ui, HOVER), *hv);
     n->bg = bg;
+    n->opacity = CUI_MAX(0.001f, opacity);
     cui__mark_interactive(ui, row, t->selectable ? CUI_IF_FOCUSABLE : 0);
     if (r.hovered && t->selectable) cui__set_cursor(ui, CUI_CURSOR_HAND);
     cui__open(ui, row);
@@ -9832,6 +9833,8 @@ bool cui_table_row(cui_ctx *ui, bool selected) {
     ui->last_id = rid;
     return r.clicked;
 }
+
+bool cui_table_row(cui_ctx *ui, bool selected) { return cui_table_row_ex(ui, selected, 1.0f); }
 
 void cui_table_cell(cui_ctx *ui) {
     struct cui_table_build *t = ui->building.table;
@@ -41231,6 +41234,25 @@ void cui__float_end(cui_ctx *ui) {
     if (ui->layer_depth > 0) ui->current_layer = ui->layer_stack[--ui->layer_depth];
 }
 
+void cui_overlay_rect(cui_ctx *ui, cui_rect r, float radius, cui_color fill, cui_color border,
+                      float border_width) {
+    int parent = cui__current(ui);
+    float ox = 0, oy = 0;
+    if (parent >= 0) {
+        ox = ui->nodes[parent].rect.x - ui->nodes[parent].scroll_x;
+        oy = ui->nodes[parent].rect.y - ui->nodes[parent].scroll_y;
+    }
+    int i = cui__absolute(ui, 0, r.x - ox, r.y - oy, r.w, r.h);
+    cui_node *n = &ui->nodes[i];
+    n->bg = cui_color_of(ui, fill);
+    n->radius = CUI_CORNERS(radius);
+    if (border.a && border_width > 0) {
+        n->border = border_width;
+        n->border_color = cui_color_of(ui, border);
+    }
+    n->flags |= CUI_NF_ON_TOP;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Public containers                                                        */
 /* ------------------------------------------------------------------------ */
@@ -42108,7 +42130,8 @@ static void cui__paint_node(cui_ctx *ui, int i, cui_rect clip) {
         cui_push_clip(ui, r);
         child_clip = cui__rect_intersect(clip, cui__xform_rect(ui, r));
     }
-    for (int c = n->abs_first; c >= 0; c = ui->nodes[c].next) cui__paint_node(ui, c, child_clip);
+    for (int c = n->abs_first; c >= 0; c = ui->nodes[c].next)
+        if (!(ui->nodes[c].flags & CUI_NF_ON_TOP)) cui__paint_node(ui, c, child_clip);
     bool any_top = false;
     for (int c = n->first; c >= 0; c = ui->nodes[c].next) {
         if (ui->nodes[c].flags & CUI_NF_ON_TOP) { any_top = true; continue; }
@@ -42117,6 +42140,9 @@ static void cui__paint_node(cui_ctx *ui, int i, cui_rect clip) {
     if (any_top)
         for (int c = n->first; c >= 0; c = ui->nodes[c].next)
             if (ui->nodes[c].flags & CUI_NF_ON_TOP) cui__paint_node(ui, c, child_clip);
+    /* An absolute overlay marked ON_TOP (a drag band) paints over the rows too. */
+    for (int c = n->abs_first; c >= 0; c = ui->nodes[c].next)
+        if (ui->nodes[c].flags & CUI_NF_ON_TOP) cui__paint_node(ui, c, child_clip);
     if (clips) cui_pop_clip(ui);
     n = &ui->nodes[i];
     if (border_after) cui_draw_rect_border(ui, r, n->radius, cui__rgba(0, 0, 0, 0), n->border_color, n->border);
@@ -67700,6 +67726,14 @@ static bool cui__button_impl(cui_ctx *ui, cui_id id, const char *label, const ch
     if (v == CUI_BUTTON_DEFAULT) v = (icon_only || ui->button_group_depth > 0) ? CUI_BUTTON_GHOST : CUI_BUTTON_SECONDARY;
     cui__btn_colors col = cui__button_colors(ui, v, o->selected);
     if (o->color.r | o->color.g | o->color.b | o->color.a) col.fg = cui_color_of(ui, o->color);
+    if (o->background.r | o->background.g | o->background.b | o->background.a) {
+        cui_color base = cui_color_of(ui, o->background);
+        col.bg = base;
+        col.bg_hover = cui_mix(base, CUI_C(ui, FOREGROUND), 0.07f);
+        col.bg_press = cui_mix(base, CUI_C(ui, FOREGROUND), 0.15f);
+        col.border = (cui_color){0, 0, 0, 0};
+        col.border_hover = (cui_color){0, 0, 0, 0};
+    }
     cui__tween(ui, &st->hover, r.hovered ? 1.0f : 0.0f, CUI__T_HOVER);
     cui__tween(ui, &st->focus, r.focus_visible ? 1.0f : 0.0f, CUI__T_FOCUS);
     cui__spring(ui, &st->press, r.pressed ? CUI__PRESS : 1.0f, CUI_SPRING_SNAPPY);

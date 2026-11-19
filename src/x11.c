@@ -1,5 +1,7 @@
 #include "x11.h"
 
+#include "appicon.h"
+
 #include <X11/Xatom.h>
 
 #include <stdint.h>
@@ -58,6 +60,10 @@ void frame_make_frameless(GreedFrame *f) {
     hints.decorations = 0;
     Atom atom = XInternAtom(f->dpy, "_MOTIF_WM_HINTS", False);
     XChangeProperty(f->dpy, f->win, atom, atom, 32, PropModeReplace, (unsigned char *)&hints, 5);
+    atom = XInternAtom(f->dpy, "_NET_WM_ICON", False);
+    XChangeProperty(f->dpy, f->win, atom, XA_CARDINAL, 32, PropModeReplace,
+                    (unsigned char *)greed_icon,
+                    (int)(sizeof greed_icon / sizeof greed_icon[0]));
     XFlush(f->dpy);
 }
 

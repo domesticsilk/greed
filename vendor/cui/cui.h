@@ -750,6 +750,7 @@ typedef struct cui_button_opts {
     const char *shortcut;      /* shown as a hint in the tooltip, e.g. "Ctrl S" */
     cui_size width;
     cui_color color;           /* text and icon color, e.g. CUI_COLOR_ACCENT for a toggled icon */
+    cui_color background;      /* solid fill override; hover and press are derived from it */
 } cui_button_opts;
 
 CUI_API bool cui_button_ex(cui_ctx *ui, const char *label, const cui_button_opts *opts);
@@ -1110,6 +1111,8 @@ typedef struct cui_table_opts {
 CUI_API bool cui_table_begin_ex(cui_ctx *ui, const char *id, const cui_table_column *columns, int column_count, const cui_table_opts *opts);
 /* Begin a row. Returns true when the row is clicked. */
 CUI_API bool cui_table_row(cui_ctx *ui, bool selected);
+/* Same, with the row and its contents faded (0.001-1). */
+CUI_API bool cui_table_row_ex(cui_ctx *ui, bool selected, float opacity);
 /* Next cell; put any components inside, or use cui_table_cell_text. */
 CUI_API void cui_table_cell(cui_ctx *ui);
 CUI_API void cui_table_cell_text(cui_ctx *ui, const char *text);
@@ -4408,6 +4411,8 @@ typedef struct cui_corners { float tl, tr, br, bl; } cui_corners;
 
 CUI_API void cui_draw_rect(cui_ctx *ui, cui_rect r, cui_corners radius, cui_color fill);
 CUI_API void cui_draw_rect_border(cui_ctx *ui, cui_rect r, cui_corners radius, cui_color fill, cui_color border, float border_width);
+/* Screen-space rectangle painted above the current page (drag bands, guides). */
+CUI_API void cui_overlay_rect(cui_ctx *ui, cui_rect r, float radius, cui_color fill, cui_color border, float border_width);
 CUI_API void cui_draw_rect_gradient(cui_ctx *ui, cui_rect r, cui_corners radius, cui_color top, cui_color bottom);
 CUI_API void cui_draw_shadow(cui_ctx *ui, cui_rect r, cui_corners radius, float blur, float spread, cui_vec2 offset, cui_color color);
 CUI_API void cui_draw_line(cui_ctx *ui, cui_vec2 a, cui_vec2 b, float thickness, cui_color color);

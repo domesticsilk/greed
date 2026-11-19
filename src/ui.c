@@ -11,6 +11,8 @@
 #include "cui.h"
 
 #include <limits.h>
+#include <math.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -43,6 +45,28 @@ typedef struct {
     char filter[128];
     bool focus_search;
     char selected[32];
+    /* Multi-selection: every action button works on the whole set. */
+    char sel[256][32];
+    int sel_count;
+    bool drag_active, drag_moved, drag_add;
+    double drag_x, drag_y;
+    char drag_base[256][32];
+    int drag_base_count;
+    bool suppress_click;
+    cui_rect row_rect[512];
+    char row_gid[512][32];
+    int row_n;
+    /* Filter fade and page transitions. */
+    unsigned filter_hash, row_gen;
+    struct {
+        char gid[32];
+        float v;
+        unsigned gen;
+    } fade[512];
+    int fade_count;
+    int page_key;
+    float page_fade;
+    float conn_fade;
     cui_id menu_anchor;
     bool show_add;
     bool show_settings;
@@ -115,12 +139,132 @@ static Download *find_item(App *a, const char *gid) {
     return NULL;
 }
 
+static bool selection_has(const App *a, const char *gid) {
+    for (int i = 0; i < a->sel_count; i++)
+        if (!strcmp(a->sel[i], gid)) return true;
+    return false;
+}
+
+static void selection_add(App *a, const char *gid) {
+    if (selection_has(a, gid) || a->sel_count >= 256) return;
+    snprintf(a->sel[a->sel_count++], sizeof a->sel[0], "%s", gid);
+}
+
+static void selection_remove(App *a, const char *gid) {
+    for (int i = 0; i < a->sel_count; i++) {
+        if (strcmp(a->sel[i], gid)) continue;
+        memmove(a->sel[i], a->sel[i + 1], (size_t)(a->sel_count - i - 1) * sizeof a->sel[0]);
+        a->sel_count--;
+        if (!strcmp(a->selected, gid)) {
+            if (a->sel_count)
+                snprintf(a->selected, sizeof a->selected, "%s", a->sel[a->sel_count - 1]);
+            else a->selected[0] = 0;
+        }
+        return;
+    }
+}
+
+static void selection_set(App *a, const char *gid) {
+    a->sel_count = 0;
+    selection_add(a, gid);
+    snprintf(a->selected, sizeof a->selected, "%s", gid);
+}
+
+static void selection_clear(App *a) {
+    a->sel_count = 0;
+    a->selected[0] = 0;
+}
+
+static void selection_toggle(App *a, const char *gid) {
+    if (selection_has(a, gid)) {
+        selection_remove(a, gid);
+        return;
+    }
+    selection_add(a, gid);
+    snprintf(a->selected, sizeof a->selected, "%s", gid);
+}
+
+static void selection_prune(App *a) {
+    int w = 0;
+    for (int i = 0; i < a->sel_count; i++) {
+        if (!find_item(a, a->sel[i])) continue;
+        if (w != i) memmove(a->sel[w], a->sel[i], sizeof a->sel[0]);
+        w++;
+    }
+    a->sel_count = w;
+    if (!selection_has(a, a->selected)) {
+        if (w) snprintf(a->selected, sizeof a->selected, "%s", a->sel[w - 1]);
+        else a->selected[0] = 0;
+    }
+}
+
+static bool selection_can_pause(App *a) {
+    for (int i = 0; i < a->sel_count; i++) {
+        Download *d = find_item(a, a->sel[i]);
+        if (d && (!strcmp(d->status, "active") || !strcmp(d->status, "waiting"))) return true;
+    }
+    return false;
+}
+
+static bool selection_can_resume(App *a) {
+    for (int i = 0; i < a->sel_count; i++) {
+        Download *d = find_item(a, a->sel[i]);
+        if (d && (!strcmp(d->status, "paused") || !strcmp(d->status, "error"))) return true;
+    }
+    return false;
+}
+
 /* aria2 reports a torrent's name as its folder, so multi-file checksums are out of scope. */
 static bool download_path(const Download *d, char *out, size_t cap) {
     if (d->file_count > 1 || !d->name[0]) return false;
     if (d->dir[0]) snprintf(out, cap, "%s/%s", d->dir, d->name);
     else snprintf(out, cap, "%s", d->name);
     return true;
+}
+
+static bool spawn_wait(char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    int status;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return false;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+/* Ask the desktop's file-manager service, not the inode/directory handler:
+ * desktop files for other apps sometimes claim that MIME type. */
+static void open_folder(const char *dir) {
+    if (!dir || !dir[0]) return;
+    static const char hex[] = "0123456789ABCDEF";
+    char encoded[PATH_MAX * 3 + 1];
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)dir; *p && o + 4 < sizeof encoded; p++) {
+        if (isalnum(*p) || strchr("/-._~", *p)) encoded[o++] = (char)*p;
+        else {
+            encoded[o++] = '%';
+            encoded[o++] = hex[*p >> 4];
+            encoded[o++] = hex[*p & 15];
+        }
+    }
+    encoded[o] = 0;
+    char spec[PATH_MAX * 3 + 32];
+    snprintf(spec, sizeof spec, "array:string:file://%s", encoded);
+    char *const argv[] = {"dbus-send",
+                          "--session",
+                          "--dest=org.freedesktop.FileManager1",
+                          "--type=method_call",
+                          "/org/freedesktop/FileManager1",
+                          "org.freedesktop.FileManager1.ShowFolders",
+                          spec,
+                          "string:",
+                          NULL};
+    if (spawn_wait(argv)) return;
+    cui_app_open_url(dir);
 }
 
 static void verify_download(App *a, Download *d) {
@@ -244,7 +388,7 @@ static void poll_engine(App *a) {
     a->items = fresh;
     a->count = n;
     a->cap = cap;
-    if (a->selected[0] && !find_item(a, a->selected)) a->selected[0] = 0;
+    selection_prune(a);
 
     struct json_object *st = rpc_call(&a->rpc, "aria2.getGlobalStat", NULL);
     if (st) {
@@ -436,7 +580,6 @@ static void retry_download(App *a, Download *d) {
     }
     json_object_put(v);
     add_links(a, url, dir, torrent ? NULL : name, a->cfg.max_concurrent);
-    a->selected[0] = 0;
     set_status(a, "Retrying %s", name);
 }
 
@@ -458,13 +601,41 @@ static void remove_download(App *a, Download *d) {
         if (r) json_object_put(r);
     }
     set_status(a, "Removed");
-    if (!strcmp(a->selected, d->gid)) a->selected[0] = 0;
+    selection_remove(a, d->gid);
     a->last_poll = 0;
 }
 
 static void remove_selected(App *a) {
-    Download *d = find_item(a, a->selected);
-    if (d) remove_download(a, d);
+    char gids[256][32];
+    int n = a->sel_count;
+    memcpy(gids, a->sel, (size_t)n * sizeof gids[0]);
+    for (int i = 0; i < n; i++) {
+        Download *d = find_item(a, gids[i]);
+        if (d) remove_download(a, d);
+    }
+}
+
+static void pause_selection(App *a) {
+    char gids[256][32];
+    int n = a->sel_count;
+    memcpy(gids, a->sel, (size_t)n * sizeof gids[0]);
+    for (int i = 0; i < n; i++) {
+        Download *d = find_item(a, gids[i]);
+        if (d && (!strcmp(d->status, "active") || !strcmp(d->status, "waiting")))
+            toggle_download(a, d);
+    }
+}
+
+static void resume_selection(App *a) {
+    char gids[256][32];
+    int n = a->sel_count;
+    memcpy(gids, a->sel, (size_t)n * sizeof gids[0]);
+    for (int i = 0; i < n; i++) {
+        Download *d = find_item(a, gids[i]);
+        if (!d) continue;
+        if (!strcmp(d->status, "paused")) toggle_download(a, d);
+        else if (!strcmp(d->status, "error")) retry_download(a, d);
+    }
 }
 
 static void start_engine(App *a) {
@@ -611,13 +782,7 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
 
     cui_column(ui, .width = CUI_PX(width), .height = CUI_FILL, .bg = CUI_COLOR_SURFACE, .pad = 10,
                .gap = 2, .clip = true, .opacity = opacity) {
-        cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
-            cui_nav_section(ui, "LIBRARY");
-            cui_spacer(ui);
-            if (cui_icon_button(ui, CUI_ICON_PANEL_LEFT, .size = CUI_SIZE_SM,
-                                .tooltip = "Collapse sidebar"))
-                a->sidebar_open = false;
-        }
+        cui_nav_section(ui, "LIBRARY");
         for (int t = 0; t < TAB_COUNT; t++) {
             char badge[16] = {0};
             if (counts[t] > 0) snprintf(badge, sizeof badge, "%d", counts[t]);
@@ -652,18 +817,21 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
         }
         cui_spacer(ui);
         cui_separator(ui);
-        cui_color engine_bg =
-            cui_color_of(ui, a->connected ? CUI_COLOR_SUCCESS : CUI_COLOR_DANGER);
-        cui_box(ui, .dir = CUI_STACK, .width = CUI_FILL, .height = CUI_PX(30)) {
-            cui_box(ui, .width = CUI_FILL, .height = CUI_FILL, .radius = 6, .bg = engine_bg) {}
-            if (cui_button(ui, a->connected ? "aria2 connected" : "aria2 offline",
-                           .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM, .full_width = true,
-                           .color = CUI_COLOR_BACKGROUND)) {
-                if (!a->connected && a->cfg.auto_start_aria2)
-                    aria2_ensure_running(&a->cfg, true);
-                a->last_poll = 0;
-                set_status(a, a->connected ? "Connection refreshed" : "Reconnecting to aria2…");
-            }
+        /* Solid status pill; the fill itself fades when the engine comes or goes. */
+        float dt = cui_delta_time(ui);
+        float speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
+        float step = 1.0f - expf(-dt * 10.0f * speed);
+        a->conn_fade += ((a->connected ? 1.0f : 0.0f) - a->conn_fade) * step;
+        cui_color engine_bg = cui_mix(cui_color_of(ui, CUI_COLOR_DANGER),
+                                      cui_color_of(ui, CUI_COLOR_SUCCESS), a->conn_fade);
+        engine_bg = cui_mix(engine_bg, cui_color_of(ui, CUI_COLOR_SURFACE), 0.18f);
+        if (cui_button(ui, a->connected ? "aria2 connected" : "aria2 offline",
+                       .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM, .full_width = true,
+                       .background = engine_bg, .color = CUI_COLOR_BACKGROUND)) {
+            if (!a->connected && a->cfg.auto_start_aria2)
+                aria2_ensure_running(&a->cfg, true);
+            a->last_poll = 0;
+            set_status(a, a->connected ? "Connection refreshed" : "Reconnecting to aria2…");
         }
     }
 }
@@ -692,6 +860,11 @@ static void details(App *a, cui_ctx *ui) {
         cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
             cui_text(ui, "DETAILS", .size = 11, .font = CUI_FONT_MEDIUM,
                      .color = CUI_COLOR_TEXT_MUTED);
+            if (a->sel_count > 1) {
+                char badge[24];
+                snprintf(badge, sizeof badge, "%d selected", a->sel_count);
+                cui_badge(ui, badge, .tone = CUI_TONE_ACCENT);
+            }
             cui_spacer(ui);
             if (cui_icon_button(ui, CUI_ICON_X, .size = CUI_SIZE_SM, .tooltip = "Close details"))
                 a->details_open = false;
@@ -781,7 +954,7 @@ static void details(App *a, cui_ctx *ui) {
             cui_row(ui, .gap = 8) {
                 if (cui_button(ui, "Folder", .icon = CUI_ICON_FOLDER_OPEN, .size = CUI_SIZE_SM,
                                .variant = CUI_BUTTON_GHOST, .width = CUI_FILL))
-                    cui_app_open_url(d->dir);
+                    open_folder(d->dir);
                 if (cui_button(ui, "Remove", .icon = CUI_ICON_TRASH_2, .size = CUI_SIZE_SM,
                                .variant = CUI_BUTTON_GHOST, .width = CUI_FILL))
                     remove_selected(a);
@@ -790,11 +963,62 @@ static void details(App *a, cui_ctx *ui) {
     }
 }
 
+static unsigned hash_text(const char *s) {
+    unsigned h = 2166136261u;
+    for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u;
+    return h;
+}
+
+/* Filter changes bump row_gen, so every surviving row fades in again. */
+static float row_fade(App *a, const char *gid, float step) {
+    int slot = -1;
+    for (int i = 0; i < a->fade_count; i++) {
+        if (strcmp(a->fade[i].gid, gid)) continue;
+        slot = i;
+        break;
+    }
+    if (slot < 0) {
+        if (a->fade_count >= 512) return 1.0f;
+        slot = a->fade_count++;
+        snprintf(a->fade[slot].gid, sizeof a->fade[0].gid, "%s", gid);
+        a->fade[slot].v = 0.0f;
+    }
+    if (a->fade[slot].gen != a->row_gen) {
+        a->fade[slot].gen = a->row_gen;
+        a->fade[slot].v = 0.0f;
+    }
+    a->fade[slot].v += (1.0f - a->fade[slot].v) * step;
+    if (a->fade[slot].v > 0.995f) a->fade[slot].v = 1.0f;
+    return a->fade[slot].v;
+}
+
+static void drag_selection(App *a, cui_vec2 mp) {
+    float x0 = a->drag_x < mp.x ? a->drag_x : mp.x;
+    float x1 = a->drag_x > mp.x ? a->drag_x : mp.x;
+    float y0 = a->drag_y < mp.y ? a->drag_y : mp.y;
+    float y1 = a->drag_y > mp.y ? a->drag_y : mp.y;
+    a->sel_count = 0;
+    if (a->drag_add) {
+        for (int i = 0; i < a->drag_base_count; i++)
+            snprintf(a->sel[a->sel_count++], sizeof a->sel[0], "%s", a->drag_base[i]);
+    }
+    for (int i = 0; i < a->row_n; i++) {
+        cui_rect r = a->row_rect[i];
+        if (r.x >= x1 || r.x + r.w <= x0 || r.y >= y1 || r.y + r.h <= y0) continue;
+        selection_add(a, a->row_gid[i]);
+    }
+    if (a->sel_count) snprintf(a->selected, sizeof a->selected, "%s", a->sel[a->sel_count - 1]);
+    else a->selected[0] = 0;
+}
+
 static void download_table(App *a, cui_ctx *ui) {
     int rows[512];
     int n = collect_rows(a, rows, 512);
     if (n > 512) n = 512;
     if (n == 0) {
+        a->row_n = 0;
+        a->suppress_click = false;
+        a->drag_active = false;
         cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_CENTER,
                    .justify = CUI_JUSTIFY_CENTER, .gap = 10) {
             cui_icon(ui, CUI_ICON_DOWNLOAD, 36, CUI_COLOR_TEXT_MUTED);
@@ -817,31 +1041,67 @@ static void download_table(App *a, cui_ctx *ui) {
         {"ETA", CUI_PX(64), CUI_TEXT_RIGHT, false},
         {"STATUS", CUI_PX(104), CUI_TEXT_START, false},
     };
+    double speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
+    float step = 1.0f - expf(-cui_delta_time(ui) * 12.0f * speed);
+    unsigned filter_hash = hash_text(a->filter);
+    if (filter_hash != a->filter_hash) {
+        a->filter_hash = filter_hash;
+        a->row_gen++;
+    }
+    bool down = cui_mouse_down(ui, CUI_MOUSE_LEFT);
+    bool press = cui_mouse_clicked(ui, CUI_MOUSE_LEFT);
+    cui_vec2 mp = cui_mouse_pos(ui);
+    if (a->drag_active && !down) {
+        a->suppress_click = a->drag_moved;
+        a->drag_active = false;
+    }
+    if (a->drag_active && down) {
+        if (fabs(mp.x - a->drag_x) + fabs(mp.y - a->drag_y) > 4) a->drag_moved = true;
+        if (a->drag_moved) drag_selection(a, mp);
+    }
     cui_table(ui, "downloads", cols, 6, .height = CUI_FILL, .striped = true, .compact = true,
               .selectable = true) {
+        a->row_n = 0;
         for (int r = 0; r < n; r++) {
             Download *d = &a->items[rows[r]];
-            bool selected = !strcmp(a->selected, d->gid);
-            bool clicked = cui_table_row(ui, selected);
+            bool selected = selection_has(a, d->gid);
+            bool clicked = cui_table_row_ex(ui, selected, row_fade(a, d->gid, step));
+            bool hovered = cui_last_hovered(ui);
+            if (hovered && press && !a->drag_active) {
+                a->drag_active = true;
+                a->drag_moved = false;
+                a->drag_x = mp.x;
+                a->drag_y = mp.y;
+                a->drag_add = (cui_key_mods(ui) & CUI_MOD_CTRL) != 0;
+                a->drag_base_count = 0;
+                if (a->drag_add) {
+                    for (int i = 0; i < a->sel_count; i++)
+                        snprintf(a->drag_base[i], sizeof a->drag_base[0], "%s", a->sel[i]);
+                    a->drag_base_count = a->sel_count;
+                }
+            }
+            if (a->row_n < 512) {
+                a->row_rect[a->row_n] = cui_last_rect(ui);
+                snprintf(a->row_gid[a->row_n], sizeof a->row_gid[0], "%s", d->gid);
+                a->row_n++;
+            }
             cui_id anchor = cui_last_id(ui);
-            cui_rect rr = cui_last_rect(ui);
-            cui_vec2 mp = cui_mouse_pos(ui);
-            bool over = cui_mouse_clicked(ui, CUI_MOUSE_RIGHT) && mp.x >= rr.x &&
-                        mp.x <= rr.x + rr.w && mp.y >= rr.y && mp.y <= rr.y + rr.h;
-            if (over) a->menu_anchor = anchor;
+            bool over = cui_mouse_clicked(ui, CUI_MOUSE_RIGHT) && hovered;
+            if (over) {
+                if (!selection_has(a, d->gid)) selection_set(a, d->gid);
+                a->menu_anchor = anchor;
+            }
             bool menu_row = a->menu_anchor && anchor == a->menu_anchor;
             if (menu_row) {
                 if (cui_context_menu_begin(ui, "download-menu")) {
-                    if (strcmp(a->selected, d->gid))
-                        snprintf(a->selected, sizeof a->selected, "%s", d->gid);
+                    if (cui_menu_item(ui, "Select", .icon = CUI_ICON_SQUARE_CHECK,
+                                      .checked = selection_has(a, d->gid))) {
+                        selection_toggle(a, d->gid);
+                        a->details_open = true;
+                    }
                     if (cui_menu_item(ui, "Info", .icon = CUI_ICON_INFO)) {
                         snprintf(a->info_gid, sizeof a->info_gid, "%s", d->gid);
                         a->show_info = true;
-                    }
-                    if (cui_menu_item(ui, "Select", .icon = CUI_ICON_SQUARE_CHECK,
-                                      .checked = selected)) {
-                        snprintf(a->selected, sizeof a->selected, "%s", d->gid);
-                        a->details_open = true;
                     }
                     bool can_verify = download_is_finished(d) && d->file_count <= 1;
                     if (cui_menu_item(ui, "Verify checksum", .icon = CUI_ICON_CHECK_CHECK,
@@ -856,27 +1116,30 @@ static void download_table(App *a, cui_ctx *ui) {
                             retry_download(a, d);
                     } else if (paused) {
                         if (cui_menu_item(ui, "Resume", .icon = CUI_ICON_PLAY))
-                            toggle_download(a, d);
+                            resume_selection(a);
                     } else if (cui_menu_item(ui, "Pause", .icon = CUI_ICON_PAUSE,
                                              .disabled = !running)) {
-                        toggle_download(a, d);
+                        pause_selection(a);
                     }
                     if (cui_menu_item(ui, "Open folder", .icon = CUI_ICON_FOLDER_OPEN))
-                        cui_app_open_url(d->dir);
+                        open_folder(d->dir);
                     cui_menu_separator(ui);
                     if (cui_menu_item(ui, "Remove", .icon = CUI_ICON_TRASH_2, .danger = true))
-                        remove_download(a, d);
+                        remove_selected(a);
                     cui_context_menu_end(ui);
                 } else {
                     a->menu_anchor = 0;
                 }
             }
-            if (clicked) {
+            if (clicked && !a->suppress_click) {
                 double now = cui_time(ui);
                 if (now - a->last_click < 0.35 && !strcmp(a->last_click_gid, d->gid)) {
-                    cui_app_open_url(d->dir);
+                    open_folder(d->dir);
+                } else if (cui_key_mods(ui) & CUI_MOD_CTRL) {
+                    selection_toggle(a, d->gid);
+                    a->details_open = true;
                 } else {
-                    snprintf(a->selected, sizeof a->selected, "%s", d->gid);
+                    selection_set(a, d->gid);
                     a->details_open = true;
                 }
                 a->last_click = now;
@@ -927,6 +1190,17 @@ static void download_table(App *a, cui_ctx *ui) {
             }
         }
     }
+    if (a->drag_active && a->drag_moved) {
+        cui_rect band = {
+            a->drag_x < mp.x ? a->drag_x : mp.x,
+            a->drag_y < mp.y ? a->drag_y : mp.y,
+            fabsf(mp.x - a->drag_x),
+            fabsf(mp.y - a->drag_y),
+        };
+        cui_color accent = cui_color_of(ui, CUI_COLOR_ACCENT);
+        cui_overlay_rect(ui, band, 3, cui_alpha(accent, 0.12f), cui_alpha(accent, 0.55f), 1);
+    }
+    a->suppress_click = false;
 }
 
 static int count_status(const App *a, const char *status) {
@@ -948,8 +1222,9 @@ static bool disk_usage(const char *path, double *used_gb, double *total_gb,
     return true;
 }
 
-static void stats_page(App *a, cui_ctx *ui) {
-    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14, .gap = 12) {
+static void stats_page(App *a, cui_ctx *ui, float opacity) {
+    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14, .gap = 12,
+               .opacity = opacity) {
         cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
             cui_column(ui, .gap = 2) {
                 cui_heading(ui, "Statistics", 2);
@@ -1031,15 +1306,21 @@ static void stats_page(App *a, cui_ctx *ui) {
 }
 
 static void content(App *a, cui_ctx *ui) {
+    int page = a->show_stats ? 1 : 0;
+    if (page != a->page_key) {
+        a->page_key = page;
+        a->page_fade = 0.0f;
+    }
+    float speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
+    a->page_fade += (1.0f - a->page_fade) * (1.0f - expf(-cui_delta_time(ui) * 14.0f * speed));
+    float page_opacity = a->page_fade > 0.999f ? 0.0f : (a->page_fade > 0.001f ? a->page_fade : 0.001f);
     if (a->show_stats) {
-        stats_page(a, ui);
+        stats_page(a, ui, page_opacity);
         return;
     }
-    Download *sel = find_item(a, a->selected);
-    bool can_pause = sel && (!strcmp(sel->status, "active") || !strcmp(sel->status, "waiting"));
-    bool can_resume = sel && (!strcmp(sel->status, "paused") || !strcmp(sel->status, "error"));
 
-    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14, .gap = 10) {
+    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14, .gap = 10,
+               .opacity = page_opacity) {
         if (!a->connected) {
             cui_row(ui, .width = CUI_FILL, .bg = CUI_COLOR_SURFACE_RAISED, .border = 1,
                     .border_color = CUI_COLOR_DANGER, .radius = 8, .pad_x = 12, .pad_y = 8,
@@ -1056,19 +1337,19 @@ static void content(App *a, cui_ctx *ui) {
             cui_search(ui, "filter", a->filter, sizeof a->filter, .placeholder = "Search downloads",
                        .width = CUI_FILL, .autofocus = a->focus_search);
             a->focus_search = false;
-            char shown[32];
-            snprintf(shown, sizeof shown, "%d shown", collect_rows(a, NULL, 0));
-            cui_text(ui, shown, .size = 12, .color = CUI_COLOR_TEXT_MUTED);
+            char shown[48];
+            if (a->sel_count > 1) snprintf(shown, sizeof shown, "%d selected", a->sel_count);
+            else snprintf(shown, sizeof shown, "%d shown", collect_rows(a, NULL, 0));
+            cui_text(ui, shown, .size = 12,
+                     .color = a->sel_count > 1 ? CUI_COLOR_ACCENT : CUI_COLOR_TEXT_MUTED);
             if (cui_icon_button(ui, CUI_ICON_PAUSE, .size = CUI_SIZE_SM, .tooltip = "Pause",
-                                .disabled = !can_pause))
-                toggle_selected(a);
+                                .disabled = !selection_can_pause(a)))
+                pause_selection(a);
             if (cui_icon_button(ui, CUI_ICON_PLAY, .size = CUI_SIZE_SM, .tooltip = "Resume",
-                                .disabled = !can_resume)) {
-                if (!strcmp(sel->status, "error")) retry_download(a, sel);
-                else toggle_selected(a);
-            }
+                                .disabled = !selection_can_resume(a)))
+                resume_selection(a);
             if (cui_icon_button(ui, CUI_ICON_TRASH_2, .size = CUI_SIZE_SM, .tooltip = "Remove",
-                                .disabled = !sel))
+                                .disabled = a->sel_count == 0))
                 remove_selected(a);
         }
         download_table(a, ui);
@@ -1076,8 +1357,11 @@ static void content(App *a, cui_ctx *ui) {
 }
 
 static void statusbar(App *a, cui_ctx *ui) {
-    char count[48];
-    snprintf(count, sizeof count, "%d downloads", a->count);
+    char count[64];
+    if (a->sel_count > 1)
+        snprintf(count, sizeof count, "%d selected · %d downloads", a->sel_count, a->count);
+    else
+        snprintf(count, sizeof count, "%d downloads", a->count);
     cui_status_bar(ui, "statusbar") {
         cui_status_bar_text(ui, a->status);
         cui_status_bar_spacer(ui);
@@ -1430,9 +1714,19 @@ static void info_dialog(App *a, cui_ctx *ui) {
     }
 }
 
+/* Select every row the current tab and filter show. */
+static void select_all(App *a) {
+    int rows[512];
+    int n = collect_rows(a, rows, 512);
+    for (int i = 0; i < n; i++) selection_add(a, a->items[rows[i]].gid);
+    if (a->sel_count) snprintf(a->selected, sizeof a->selected, "%s", a->sel[0]);
+    a->details_open = a->sel_count > 0;
+}
+
 static void handle_keys(App *a, cui_ctx *ui) {
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_N)) open_add(a);
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_B)) a->sidebar_open = !a->sidebar_open;
+    if (!cui_wants_keyboard(ui) && cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_A)) select_all(a);
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_F)) {
         a->show_stats = false;
         a->focus_search = true;
@@ -1440,7 +1734,7 @@ static void handle_keys(App *a, cui_ctx *ui) {
     if (cui_wants_keyboard(ui)) return;
     if (cui_key_pressed(ui, CUI_KEY_DELETE)) remove_selected(a);
     if (cui_key_pressed(ui, CUI_KEY_SPACE)) toggle_selected(a);
-    if (cui_key_pressed(ui, CUI_KEY_ESCAPE)) a->selected[0] = 0;
+    if (cui_key_pressed(ui, CUI_KEY_ESCAPE)) selection_clear(a);
 }
 
 static void frame(cui_ctx *ui, void *user) {
@@ -1471,6 +1765,13 @@ static void frame(cui_ctx *ui, void *user) {
         snprintf(a->selected, sizeof a->selected, "%s", a->items[0].gid);
     poll_clipboard(a, ui);
     cui_request_wakeup(ui, 0.8f);
+    /* Our fades and the drag band are not CUI tweens, so keep frames coming. */
+    bool animating = a->page_fade < 0.999f || a->drag_active ||
+                     (a->sidebar_open &&
+                      fabsf(a->conn_fade - (a->connected ? 1.0f : 0.0f)) > 0.01f);
+    for (int i = 0; i < a->fade_count && !animating; i++)
+        if (a->fade[i].v < 0.99f) animating = true;
+    if (animating) cui_request_wakeup(ui, 1.0f / 60.0f);
 
     if (a->clip_toast >= 0 && cui_toast_action_clicked(ui, a->clip_toast)) {
         add_links(a, a->clip_link, a->cfg.download_dir, NULL, a->cfg.max_concurrent);

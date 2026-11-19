@@ -65,8 +65,8 @@ const GreedTheme greed_themes[] = {
      {0xff7edb, 0xfede5d, 0xff8b39, 0xf97e72, 0x36f9f6, 0x72f1b8}},
     {"Oxocarbon", true, 0x0f0f0f, 0x161616, 0x262626, 0x121212, 0xf2f4f8, 0x8d8d8d, 0x262626, 0x33b1ff, 0x5dc0fd, 0xffffff, 0xee5396, 0x33b1ff, 0xff7eb6, 0x3ddbd9,
      {0x33b1ff, 0xbe95ff, 0x33b1ff, 0xff7eb6, 0x82cfff, 0x3ddbd9}},
-    {"Vesper", true, 0x101010, 0x101010, 0x1c1c1c, 0x101010, 0xffffff, 0xa0a0a0, 0x282828, 0xffc799, 0xffd3af, 0x101010, 0xff8080, 0x99ffe4, 0xffc799, 0xffc799,
-     {0xffc799, 0xa0a0a0, 0x99ffe4, 0xffc799, 0xffc799, 0xffc799}},
+    {"Vesper", true, 0x101010, 0x101010, 0x1c1c1c, 0x101010, 0xffffff, 0xa0a0a0, 0x282828, 0xffc799, 0xffd3af, 0x101010, 0xe39a9a, 0x9fd9c3, 0xffc799, 0xffc799,
+     {0xffc799, 0xa0a0a0, 0x9fd9c3, 0xffc799, 0xffc799, 0xffc799}},
     {"Carbonfox", true, 0x0c0c0c, 0x161616, 0x252525, 0x0c0c0c, 0xf2f4f8, 0x7b7c7e, 0x353535, 0x78a9ff, 0x93bafd, 0xffffff, 0xee5396, 0x25be6a, 0x3ddbd9, 0x08bdba,
      {0x78a9ff, 0xbe95ff, 0x25be6a, 0x3ddbd9, 0x78a9ff, 0x08bdba}},
     {"Duskfox", true, 0x191726, 0x232136, 0x2d2a45, 0x191726, 0xe0def4, 0x817c9c, 0x373354, 0x569fba, 0x74adc7, 0xffffff, 0xeb6f92, 0xa3be8c, 0xea9a97, 0xf6c177,
@@ -184,7 +184,7 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed) {
     c[CUI_TOKEN_SURFACE_MUTED] = CUI_RGB(t->muted);
     c[CUI_TOKEN_FOREGROUND] = CUI_RGB(t->text);
     c[CUI_TOKEN_TEXT_SECONDARY] = CUI_RGB(t->dim);
-    c[CUI_TOKEN_TEXT_MUTED] = cui_mix(CUI_RGB(t->dim), CUI_RGB(t->bg), 0.45f);
+    c[CUI_TOKEN_TEXT_MUTED] = cui_mix(CUI_RGB(t->dim), CUI_RGB(t->bg), 0.30f);
     c[CUI_TOKEN_BORDER] = CUI_RGB(t->border);
     c[CUI_TOKEN_BORDER_SUBTLE] = cui_mix(CUI_RGB(t->bg), CUI_RGB(t->border), 0.55f);
     c[CUI_TOKEN_BORDER_STRONG] = cui_mix(CUI_RGB(t->border), CUI_RGB(t->text), 0.35f);
@@ -192,10 +192,10 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed) {
     c[CUI_TOKEN_ACCENT_STRONG] = CUI_RGB(t->accent_strong);
     c[CUI_TOKEN_ACCENT_SUBTLE] = cui_alpha(CUI_RGB(t->accent), t->dark ? 0.18f : 0.14f);
     c[CUI_TOKEN_ACCENT_FOREGROUND] = CUI_RGB(t->accent_fg);
-    c[CUI_TOKEN_SUCCESS] = CUI_RGB(t->success);
-    c[CUI_TOKEN_WARNING] = CUI_RGB(t->warning);
-    c[CUI_TOKEN_DANGER] = CUI_RGB(t->danger);
-    c[CUI_TOKEN_INFO] = CUI_RGB(t->info);
+    c[CUI_TOKEN_SUCCESS] = cui_mix(CUI_RGB(t->success), CUI_RGB(t->text), 0.08f);
+    c[CUI_TOKEN_WARNING] = cui_mix(CUI_RGB(t->warning), CUI_RGB(t->text), 0.08f);
+    c[CUI_TOKEN_DANGER] = cui_mix(CUI_RGB(t->danger), CUI_RGB(t->text), 0.08f);
+    c[CUI_TOKEN_INFO] = cui_mix(CUI_RGB(t->info), CUI_RGB(t->text), 0.08f);
     c[CUI_TOKEN_HOVER] = cui_mix(CUI_RGB(t->surface), CUI_RGB(t->text), t->dark ? 0.06f : 0.05f);
     c[CUI_TOKEN_ACTIVE] = cui_mix(CUI_RGB(t->surface), CUI_RGB(t->text), t->dark ? 0.10f : 0.08f);
     c[CUI_TOKEN_FOCUS_RING] = CUI_RGB(t->accent_strong);
