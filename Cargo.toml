@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "gui"]
 authors = ["TheFool <thefool@example.com>"]
 
 [dependencies]
-eframe = { version = "0.37", default-features = false, features = ["glow", "x11"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "x11", "default_fonts"] }
 ureq = { version = "3", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
