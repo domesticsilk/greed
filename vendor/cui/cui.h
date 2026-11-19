@@ -416,6 +416,7 @@ typedef enum cui_key {
     CUI_KEY_S, CUI_KEY_T, CUI_KEY_U, CUI_KEY_V, CUI_KEY_W, CUI_KEY_X, CUI_KEY_Y, CUI_KEY_Z,
     CUI_KEY_0, CUI_KEY_1, CUI_KEY_2, CUI_KEY_3, CUI_KEY_4, CUI_KEY_5, CUI_KEY_6, CUI_KEY_7, CUI_KEY_8, CUI_KEY_9,
     CUI_KEY_MINUS, CUI_KEY_EQUAL, CUI_KEY_COMMA, CUI_KEY_PERIOD, CUI_KEY_SLASH,
+    CUI_KEY_SEMICOLON,
     CUI_KEY_F1, CUI_KEY_F2, CUI_KEY_F3, CUI_KEY_F4, CUI_KEY_F5, CUI_KEY_F6,
     CUI_KEY_F7, CUI_KEY_F8, CUI_KEY_F9, CUI_KEY_F10, CUI_KEY_F11, CUI_KEY_F12,
     CUI_KEY_COUNT
@@ -447,6 +448,8 @@ CUI_API void cui_input_scroll(cui_ctx *ui, float dx, float dy);  /* in lines; +d
 CUI_API void cui_input_key(cui_ctx *ui, cui_key key, bool down, int mods);
 CUI_API void cui_input_text(cui_ctx *ui, const char *utf8);
 CUI_API void cui_input_focus(cui_ctx *ui, bool window_focused);
+/* Give keyboard focus to a widget id built with cui_make_id, from the same scope. */
+CUI_API void cui_focus(cui_ctx *ui, const char *id);
 /* Files dragged from the OS: hover while a drag is over the window (where the
  * platform reports it), then the drop itself. Paths are UTF-8 and copied. */
 CUI_API void cui_input_file_hover(cui_ctx *ui, bool hovering, float x, float y);
@@ -565,6 +568,8 @@ CUI_API cui_font cui_font_load_memory(cui_ctx *ui, const void *data, size_t size
 CUI_API cui_font cui_font_load_file(cui_ctx *ui, const char *path);
 /* Replace one of the built-in roles (e.g. use your brand font as CUI_FONT_BODY). */
 CUI_API void cui_font_set_role(cui_ctx *ui, cui_font role, cui_font font);
+/* The font currently assigned to a role, as a public font id. */
+CUI_API cui_font cui_font_get_role(cui_ctx *ui, cui_font role);
 /* Glyphs missing from `font` are looked up in `fallback` (e.g. CJK, emoji). */
 CUI_API void cui_font_add_fallback(cui_ctx *ui, cui_font font, cui_font fallback);
 
@@ -663,6 +668,10 @@ typedef struct cui_scroll_opts {
 CUI_API void cui_scroll_begin(cui_ctx *ui, const cui_scroll_opts *opts);
 CUI_API void cui_scroll_end(cui_ctx *ui);
 CUI_API void cui_scroll_to(cui_ctx *ui, const char *scroll_id, float y);
+/* Move a scroll area by dy, clamped to its content. */
+CUI_API void cui_scroll_by(cui_ctx *ui, const char *scroll_id, float dy);
+/* Scroll the least amount that brings the band at `y`, `h` into view. */
+CUI_API void cui_scroll_show(cui_ctx *ui, const char *scope, const char *scroll_id, float y, float h);
 
 /* Resizable split view: two panes with a draggable divider. `ratio` is the
  * size of the first pane in 0..1. Call cui_split_next between the panes. */

@@ -57,6 +57,10 @@ void config_defaults(Config *c) {
     c->verify_after_complete = true;
     c->motion_speed = 1.0f;
     snprintf(c->theme, sizeof c->theme, "Dark Mono");
+    snprintf(c->font, sizeof c->font, "default");
+    c->text_scale = 1.0f;
+    c->spacing = 1.0f;
+    c->vim_mode = false;
 }
 
 static const char *jstr(struct json_object *v, const char *key) {
@@ -120,6 +124,15 @@ void config_load(Config *c) {
             if (c->motion_speed > 2.0f) c->motion_speed = 2.0f;
             const char *theme = jstr(v, "theme");
             if (theme) snprintf(c->theme, sizeof c->theme, "%s", theme);
+            const char *font = jstr(v, "font");
+            if (font) snprintf(c->font, sizeof c->font, "%s", font);
+            c->text_scale = (float)jdouble(v, "text_scale", c->text_scale);
+            if (c->text_scale < 0.85f) c->text_scale = 0.85f;
+            if (c->text_scale > 1.30f) c->text_scale = 1.30f;
+            c->spacing = (float)jdouble(v, "spacing", c->spacing);
+            if (c->spacing < 0.9f) c->spacing = 0.9f;
+            if (c->spacing > 1.12f) c->spacing = 1.12f;
+            c->vim_mode = jbool(v, "vim_mode", c->vim_mode);
             json_object_put(v);
         }
     }
@@ -145,6 +158,10 @@ bool config_save(const Config *c) {
                            json_object_new_boolean(c->verify_after_complete));
     json_object_object_add(v, "motion_speed", json_object_new_double(c->motion_speed));
     json_object_object_add(v, "theme", json_object_new_string(c->theme));
+    json_object_object_add(v, "font", json_object_new_string(c->font));
+    json_object_object_add(v, "text_scale", json_object_new_double(c->text_scale));
+    json_object_object_add(v, "spacing", json_object_new_double(c->spacing));
+    json_object_object_add(v, "vim_mode", json_object_new_boolean(c->vim_mode));
     const char *text = json_object_to_json_string_ext(v, JSON_C_TO_STRING_PRETTY);
     FILE *f = fopen(config_path(), "w");
     bool ok = false;

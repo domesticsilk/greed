@@ -17,6 +17,10 @@ typedef struct {
     bool verify_after_complete;
     float motion_speed;        /* 1 = normal, higher is faster */
     char theme[48];
+    char font[16];             /* default, sans, serif, mono */
+    float text_scale;          /* 0.85 - 1.30 */
+    float spacing;             /* 0.9 compact, 1 normal, 1.12 spacious */
+    bool vim_mode;
 } Config;
 
 #define GREED_MAX_SCHEDULED 64

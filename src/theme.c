@@ -169,9 +169,14 @@ const GreedTheme *greed_theme_find(const char *name) {
     return &greed_themes[0];
 }
 
-void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed) {
+void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, float text_scale,
+                       float spacing) {
     static const GreedTheme *last;
     if (!t) t = &greed_themes[0];
+    if (text_scale < 0.85f) text_scale = 0.85f;
+    if (text_scale > 1.30f) text_scale = 1.30f;
+    if (spacing < 0.9f) spacing = 0.9f;
+    if (spacing > 1.12f) spacing = 1.12f;
     if (t != last) {
         cui_set_theme(ui, t->dark ? CUI_THEME_DARK : CUI_THEME_LIGHT);
         last = t;
@@ -216,4 +221,8 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed) {
     th->tone_violet = CUI_RGB(t->series[5]);
     /* A hair slower than CUI's stock springs: settles instead of snapping. */
     th->motion = motion_speed > 0.05f ? 1.1f / motion_speed : 1.1f;
+    th->font_scale = text_scale;
+    th->control_sm = 30.0f * spacing;
+    th->control_md = 36.0f * spacing;
+    th->control_lg = 44.0f * spacing;
 }

@@ -1864,7 +1864,7 @@ const char *cui_key_name(cui_key k) {
         "", "Tab", "Enter", "Esc", "Backspace", "Delete", "Space", "Left", "Right", "Up", "Down",
         "Home", "End", "PgUp", "PgDn",
         "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
-        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-", "=", ",", ".", "/",
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-", "=", ",", ".", "/", ";",
         "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
     };
     if (k <= 0 || k >= CUI_KEY_COUNT) return "";
@@ -7886,6 +7886,15 @@ void cui_input_focus(cui_ctx *ui, bool focused) {
     cui__poke(ui);
 }
 
+void cui_focus(cui_ctx *ui, const char *id) {
+    if (!ui || !id) return;
+    ui->focus = cui_make_id(ui, id);
+    ui->focus_visible = true;
+    ui->text_in_len = 0;   /* the key that asked for focus is not field text */
+    ui->text_in[0] = 0;
+    cui_request_redraw(ui);
+}
+
 bool cui_key_pressed(cui_ctx *ui, cui_key k) { return k > 0 && k < CUI_KEY_COUNT && ui->kpressed[k] > 0; }
 bool cui_key_down(cui_ctx *ui, cui_key k) { return k > 0 && k < CUI_KEY_COUNT && ui->kdown[k]; }
 int cui_key_mods(cui_ctx *ui) { return ui->mods; }
@@ -7896,7 +7905,7 @@ bool cui_shortcut(cui_ctx *ui, int mods, cui_key key) {
 cui_vec2 cui_mouse_pos(cui_ctx *ui) { cui_vec2 v = { ui->mx, ui->my }; return v; }
 bool cui_mouse_down(cui_ctx *ui, cui_mouse_button b) { return (int)b >= 0 && (int)b < 3 && ui->mdown[b]; }
 bool cui_mouse_clicked(cui_ctx *ui, cui_mouse_button b) { return (int)b >= 0 && (int)b < 3 && ui->mpressed[b]; }
-bool cui_wants_keyboard(cui_ctx *ui) { return ui->edit != NULL; }
+bool cui_wants_keyboard(cui_ctx *ui) { return ui->edit != NULL || ui->edit_prev; }
 bool cui_wants_mouse(cui_ctx *ui) { return ui->hot != 0 || ui->active != 0; }
 
 void cui__set_cursor(cui_ctx *ui, cui_cursor c) { ui->cursor = c; }
@@ -59569,6 +59578,13 @@ void cui_font_set_role(cui_ctx *ui, cui_font role, cui_font font) {
     ui->fonts[real].is_icon = role == CUI_FONT_ICONS;
 }
 
+cui_font cui_font_get_role(cui_ctx *ui, cui_font role) {
+    if (role < 0 || role >= 5) return -1;
+    int f = ui->roles[role];
+    if (f < 0) return -1;
+    return f < 5 ? f : f + CUI__USER_FONT_BASE;
+}
+
 void cui_font_add_fallback(cui_ctx *ui, cui_font font, cui_font fallback) {
     cui_font_data *fd = cui__fd(ui, cui__resolve_font(ui, font));
     int fb = cui__resolve_font(ui, fallback);
@@ -68570,6 +68586,29 @@ void cui_scroll_to(cui_ctx *ui, const char *scroll_id, float y) {
     st->ty = y < 0 ? 0 : y;
 }
 
+void cui_scroll_by(cui_ctx *ui, const char *scroll_id, float dy) {
+    cui_scroll_state *st = cui_state(ui, cui_make_id(ui, scroll_id), sizeof *st);
+    st->ty += dy;
+    /* The real content height is only known after layout; scroll_begin_ex clamps this. */
+    if (st->ty < 0) st->ty = 0;
+}
+
+void cui_scroll_show(cui_ctx *ui, const char *scope, const char *scroll_id, float y, float h) {
+    cui_id id;
+    cui_push_id(ui, scope);
+    id = cui_make_id(ui, scroll_id);
+    cui_pop_id(ui);
+    cui_scroll_state *st = cui_state(ui, id, sizeof *st);
+    if (st->view_h <= 0) return;
+    const float margin = 6;
+    if (y < st->ty + margin) st->ty = y - margin;
+    else if (y + h > st->ty + st->view_h - margin) st->ty = y + h - st->view_h + margin;
+    float max = st->content_h - st->view_h;
+    if (max < 0) max = 0;
+    if (st->ty > max) st->ty = max;
+    if (st->ty < 0) st->ty = 0;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Split view                                                               */
 /* ------------------------------------------------------------------------ */
@@ -74225,6 +74264,7 @@ static cui_key cui__x11_key(KeySym ks) {
     case XK_comma: return CUI_KEY_COMMA;
     case XK_period: return CUI_KEY_PERIOD;
     case XK_slash: return CUI_KEY_SLASH;
+    case XK_semicolon: return CUI_KEY_SEMICOLON;
     default: return CUI_KEY_NONE;
     }
 }

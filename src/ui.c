@@ -78,6 +78,17 @@ typedef struct {
     int page_key;
     float page_fade;
     float conn_fade;
+    bool show_palette;
+    bool show_remove;
+    int font_pick;
+    int spacing_pick;
+    bool fonts_ready;
+    bool font_failed[3];
+    int font_applied;
+    cui_font font_default[3];
+    cui_font font_user[3][3];
+    int pending_key;
+    double pending_at;
     cui_id menu_anchor;
     bool show_add;
     bool show_settings;
@@ -113,6 +124,8 @@ typedef struct {
     int hist_count;
 } App;
 
+static void request_remove(App *a);
+
 static const char *tab_names[TAB_COUNT] = {"All", "Active", "Waiting", "Stopped", "Complete"};
 static const char *tab_icons[TAB_COUNT] = {CUI_ICON_LAYERS, CUI_ICON_ACTIVITY, CUI_ICON_CLOCK,
                                            CUI_ICON_CIRCLE_ALERT, CUI_ICON_CIRCLE_CHECK};
@@ -124,9 +137,90 @@ static void set_status(App *a, const char *fmt, ...) {
     va_end(ap);
 }
 
-static void apply_theme(cui_ctx *ui, const char *name, float motion_speed) {
-    greed_theme_apply(ui, greed_theme_find(name), motion_speed);
+static Config *active_cfg(App *a) { return a->show_settings ? &a->edit : &a->cfg; }
+
+static int font_index(const char *name) {
+    static const char *names[] = {"default", "sans", "serif", "mono"};
+    for (int i = 0; i < 4; i++)
+        if (name && !strcmp(name, names[i])) return i;
+    return 0;
 }
+
+static int spacing_index(float v) {
+    if (v < 0.96f) return 0;
+    if (v > 1.06f) return 2;
+    return 1;
+}
+
+static void apply_theme(cui_ctx *ui, App *a) {
+    Config *c = active_cfg(a);
+    greed_theme_apply(ui, greed_theme_find(c->theme), c->motion_speed, c->text_scale, c->spacing);
+}
+
+/* fc-match is the only portable way to find a family's file on Linux. */
+static cui_font load_font_query(cui_ctx *ui, const char *query) {
+    char cmd[160], path[PATH_MAX] = {0};
+    snprintf(cmd, sizeof cmd, "fc-match -f '%%{file}' '%s' 2>/dev/null", query);
+    FILE *p = popen(cmd, "r");
+    if (!p) return -1;
+    size_t n = fread(path, 1, sizeof path - 1, p);
+    path[n] = 0;
+    pclose(p);
+    n = strlen(path);
+    while (n && (path[n - 1] == '\n' || path[n - 1] == '\r')) path[--n] = 0;
+    if (!n) return -1;
+    return cui_font_load_file(ui, path);
+}
+
+/* Swap the three text roles; icons and the code font keep CUI's defaults. */
+static void apply_typography(App *a, cui_ctx *ui) {
+    if (!a->fonts_ready) {
+        a->font_default[0] = cui_font_get_role(ui, CUI_FONT_BODY);
+        a->font_default[1] = cui_font_get_role(ui, CUI_FONT_MEDIUM);
+        a->font_default[2] = cui_font_get_role(ui, CUI_FONT_DISPLAY);
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++) a->font_user[i][j] = -1;
+        a->font_applied = -1;
+        a->fonts_ready = true;
+    }
+    Config *c = active_cfg(a);
+    int pick = font_index(c->font);
+    if (pick == a->font_applied) return;
+    if (pick == 0) {
+        cui_font_set_role(ui, CUI_FONT_BODY, a->font_default[0]);
+        cui_font_set_role(ui, CUI_FONT_MEDIUM, a->font_default[1]);
+        cui_font_set_role(ui, CUI_FONT_DISPLAY, a->font_default[2]);
+        a->font_applied = pick;
+        return;
+    }
+    static const char *families[] = {"sans-serif", "serif", "monospace"};
+    const char *family = families[pick - 1];
+    if (!a->font_failed[pick - 1]) {
+        bool ok = true;
+        for (int r = 0; r < 3; r++) {
+            if (a->font_user[pick - 1][r] < 0) {
+                char query[64];
+                if (r == 0) snprintf(query, sizeof query, "%s", family);
+                else snprintf(query, sizeof query, "%s:weight=medium", family);
+                cui_font f = load_font_query(ui, query);
+                a->font_user[pick - 1][r] = f;
+                if (f < 0) ok = false;
+                else cui_font_add_fallback(ui, f, a->font_default[r]);
+            }
+        }
+        if (!ok) a->font_failed[pick - 1] = true;
+    }
+    if (a->font_failed[pick - 1]) {
+        for (int r = 0; r < 3; r++)
+            cui_font_set_role(ui, (cui_font)r, a->font_default[r]);
+        set_status(a, "System %s font not found; keeping the default", family);
+    } else {
+        for (int r = 0; r < 3; r++)
+            cui_font_set_role(ui, (cui_font)r, a->font_user[pick - 1][r]);
+    }
+    a->font_applied = pick;
+}
+
 
 static cui_color status_color(const Download *d) {
     if (!strcmp(d->status, "active")) return CUI_COLOR_ACCENT_STRONG;
@@ -622,6 +716,8 @@ static void open_settings(App *a) {
     a->settings_seen_tab = -1;
     a->theme_query[0] = 0;
     a->theme_filter = 0;
+    a->font_pick = font_index(a->edit.font);
+    a->spacing_pick = spacing_index(a->edit.spacing);
     a->show_settings = true;
 }
 
@@ -812,6 +908,9 @@ static void titlebar(App *a, cui_ctx *ui) {
         if (cui_button(ui, "Add", .icon = CUI_ICON_PLUS, .variant = CUI_BUTTON_PRIMARY,
                        .size = CUI_SIZE_SM))
             open_add(a);
+        if (cui_icon_button(ui, CUI_ICON_COMMAND, .size = CUI_SIZE_SM,
+                            .tooltip = "Commands (Ctrl K)"))
+            a->show_palette = true;
         if (cui_icon_button(ui, CUI_ICON_SETTINGS, .size = CUI_SIZE_SM, .tooltip = "Settings"))
             open_settings(a);
         cui_box(ui, .width = CUI_PX(1), .height = CUI_PX(18), .bg = CUI_COLOR_BORDER) {}
@@ -865,8 +964,8 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
     if (opacity > 1.0f) opacity = 1.0f;
     if (opacity < 0.05f) opacity = 0.05f;
 
-    cui_column(ui, .width = CUI_PX(width), .height = CUI_FILL, .bg = CUI_COLOR_SURFACE, .pad = 10,
-               .gap = 2, .clip = true, .opacity = opacity) {
+    cui_column(ui, .width = CUI_PX(width), .height = CUI_FILL, .bg = CUI_COLOR_SURFACE,
+               .pad = 10 * active_cfg(a)->spacing, .gap = 2, .clip = true, .opacity = opacity) {
         cui_nav_section(ui, "LIBRARY");
         for (int t = 0; t < TAB_COUNT; t++) {
             char badge[16] = {0};
@@ -948,8 +1047,8 @@ static void details(App *a, cui_ctx *ui) {
     if (opacity > 1.0f) opacity = 1.0f;
     if (opacity < 0.05f) opacity = 0.05f;
     cui_separator(ui);
-    cui_column(ui, .width = CUI_PX(width), .height = CUI_FILL, .bg = CUI_COLOR_SURFACE, .pad = 14,
-               .gap = 8, .clip = true, .opacity = opacity) {
+    cui_column(ui, .width = CUI_PX(width), .height = CUI_FILL, .bg = CUI_COLOR_SURFACE,
+               .pad = 14 * active_cfg(a)->spacing, .gap = 8, .clip = true, .opacity = opacity) {
         cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
             cui_text(ui, "DETAILS", .size = 11, .font = CUI_FONT_MEDIUM,
                      .color = CUI_COLOR_TEXT_MUTED);
@@ -1050,7 +1149,7 @@ static void details(App *a, cui_ctx *ui) {
                     open_folder(d->dir);
                 if (cui_button(ui, "Remove", .icon = CUI_ICON_TRASH_2, .size = CUI_SIZE_SM,
                                .variant = CUI_BUTTON_GHOST, .width = CUI_FILL))
-                    remove_selected(a);
+                    request_remove(a);
             }
         }
     }
@@ -1126,13 +1225,15 @@ static void download_table(App *a, cui_ctx *ui) {
         return;
     }
 
-    static const cui_table_column cols[] = {
+    /* Text scale grows the fixed columns only partly so long names keep room. */
+    float col_scale = 1.0f + (active_cfg(a)->text_scale - 1.0f) * 0.6f;
+    cui_table_column cols[] = {
         {"NAME", CUI_FILL, CUI_TEXT_START, false},
-        {"SIZE", CUI_PX(80), CUI_TEXT_RIGHT, false},
-        {"PROGRESS", CUI_PX(150), CUI_TEXT_START, false},
-        {"SPEED", CUI_PX(92), CUI_TEXT_RIGHT, false},
-        {"ETA", CUI_PX(64), CUI_TEXT_RIGHT, false},
-        {"STATUS", CUI_PX(104), CUI_TEXT_START, false},
+        {"SIZE", CUI_PX(80 * col_scale), CUI_TEXT_RIGHT, false},
+        {"PROGRESS", CUI_PX(150 * col_scale), CUI_TEXT_START, false},
+        {"SPEED", CUI_PX(92 * col_scale), CUI_TEXT_RIGHT, false},
+        {"ETA", CUI_PX(64 * col_scale), CUI_TEXT_RIGHT, false},
+        {"STATUS", CUI_PX(104 * col_scale), CUI_TEXT_START, false},
     };
     double speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
     float step = 1.0f - expf(-cui_delta_time(ui) * 12.0f * speed);
@@ -1147,13 +1248,14 @@ static void download_table(App *a, cui_ctx *ui) {
     if (a->drag_active && !down) {
         a->suppress_click = a->drag_moved;
         a->drag_active = false;
+        cui_request_redraw(ui);   /* remove the band even when the app is idle */
     }
     if (a->drag_active && down) {
         if (fabs(mp.x - a->drag_x) + fabs(mp.y - a->drag_y) > 4) a->drag_moved = true;
         if (a->drag_moved) drag_selection(a, mp);
     }
-    cui_table(ui, "downloads", cols, 6, .height = CUI_FILL, .striped = true, .compact = true,
-              .selectable = true) {
+    cui_table(ui, "downloads", cols, 6, .height = CUI_FILL, .striped = true,
+              .compact = active_cfg(a)->spacing < 0.96f, .selectable = true) {
         a->row_n = 0;
         for (int r = 0; r < n; r++) {
             Download *d = &a->items[rows[r]];
@@ -1218,7 +1320,7 @@ static void download_table(App *a, cui_ctx *ui) {
                         open_folder(d->dir);
                     cui_menu_separator(ui);
                     if (cui_menu_item(ui, "Remove", .icon = CUI_ICON_TRASH_2, .danger = true))
-                        remove_selected(a);
+                        request_remove(a);
                     cui_context_menu_end(ui);
                 } else {
                     a->menu_anchor = 0;
@@ -1258,8 +1360,9 @@ static void download_table(App *a, cui_ctx *ui) {
                 snprintf(pct, sizeof pct, "%.0f%%", p * 100.0);
                 cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
                     cui_progress(ui, (float)p, .height = 6, .width = CUI_FILL, .tone = status_tone(d));
-                    cui_text(ui, pct, .size = 11, .color = CUI_COLOR_TEXT_MUTED,
-                             .width = CUI_PX(36), .align = CUI_TEXT_RIGHT, .tabular = true);
+                    cui_text(ui, pct, .size = 11, .color = CUI_COLOR_TEXT_MUTED, .nowrap = true,
+                             .width = CUI_PX(44 * col_scale), .align = CUI_TEXT_RIGHT,
+                             .tabular = true);
                 }
             }
             cui_table_cell(ui); {
@@ -1278,20 +1381,18 @@ static void download_table(App *a, cui_ctx *ui) {
                          .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
             }
             cui_table_cell(ui); {
-                cui_text(ui, download_status_label(d), .size = 12, .color = status_color(d),
-                         .nowrap = true);
+                if (!strcmp(download_status_label(d), "Metadata")) {
+                    cui_row(ui, .gap = 6, .align = CUI_ALIGN_CENTER) {
+                        cui_spinner(ui, 12);
+                        cui_text(ui, "Metadata", .size = 12, .color = status_color(d),
+                                 .nowrap = true);
+                    }
+                } else {
+                    cui_text(ui, download_status_label(d), .size = 12, .color = status_color(d),
+                             .nowrap = true);
+                }
             }
         }
-    }
-    if (a->drag_active && a->drag_moved) {
-        cui_rect band = {
-            a->drag_x < mp.x ? a->drag_x : mp.x,
-            a->drag_y < mp.y ? a->drag_y : mp.y,
-            fabsf(mp.x - a->drag_x),
-            fabsf(mp.y - a->drag_y),
-        };
-        cui_color accent = cui_color_of(ui, CUI_COLOR_ACCENT);
-        cui_overlay_rect(ui, band, 3, cui_alpha(accent, 0.12f), cui_alpha(accent, 0.55f), 1);
     }
     a->suppress_click = false;
 }
@@ -1313,8 +1414,9 @@ static void fmt_disk(char *out, size_t cap, unsigned long long bytes) {
 }
 
 static void stats_page(App *a, cui_ctx *ui, float opacity) {
-    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14, .gap = 12,
-               .opacity = opacity) {
+    float space = active_cfg(a)->spacing;
+    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14 * space,
+               .gap = 12 * space, .opacity = opacity) {
         cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
             cui_heading(ui, "Statistics", 2);
             cui_spacer(ui);
@@ -1325,7 +1427,7 @@ static void stats_page(App *a, cui_ctx *ui, float opacity) {
                 if (cui_button(ui, "Start aria2", .size = CUI_SIZE_SM)) start_engine(a);
             }
         }
-        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 12) {
+        cui_card(ui, .width = CUI_FILL, .pad = 16 * space, .gap = 12 * space) {
             cui_row(ui, .width = CUI_FILL, .gap = 14, .align = CUI_ALIGN_CENTER) {
                 cui_column(ui, .gap = 2) {
                     cui_text(ui, "Throughput", .font = CUI_FONT_MEDIUM, .size = 14);
@@ -1388,7 +1490,7 @@ static void stats_page(App *a, cui_ctx *ui, float opacity) {
                 }
             }
         }
-        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
+        cui_card(ui, .width = CUI_FILL, .pad = 16 * space, .gap = 10 * space) {
             cui_row(ui, .width = CUI_FILL, .gap = 10, .align = CUI_ALIGN_CENTER) {
                 cui_icon(ui, CUI_ICON_FOLDER, 16, CUI_COLOR_TEXT_SECONDARY);
                 cui_text(ui, "Download folder", .font = CUI_FONT_MEDIUM, .size = 13,
@@ -1492,8 +1594,9 @@ static void fmt_countdown(long long secs, char *out, size_t cap) {
 
 static void schedule_page(App *a, cui_ctx *ui, float opacity) {
     long long now = (long long)time(NULL);
-    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14, .gap = 10,
-               .opacity = opacity) {
+    float space = active_cfg(a)->spacing;
+    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14 * space,
+               .gap = 10 * space, .opacity = opacity) {
         cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
             cui_column(ui, .gap = 2) {
                 cui_heading(ui, "Scheduled downloads", 2);
@@ -1619,7 +1722,8 @@ static void content(App *a, cui_ctx *ui) {
         return;
     }
 
-    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14, .gap = 10,
+    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL,
+               .pad = 14 * active_cfg(a)->spacing, .gap = 10 * active_cfg(a)->spacing,
                .opacity = page_opacity) {
         if (!a->connected) {
             cui_row(ui, .width = CUI_FILL, .bg = CUI_COLOR_SURFACE_RAISED, .border = 1,
@@ -1634,9 +1738,12 @@ static void content(App *a, cui_ctx *ui) {
             }
         }
         cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+            if (a->focus_search) {
+                cui_focus(ui, "filter");
+                a->focus_search = false;
+            }
             cui_search(ui, "filter", a->filter, sizeof a->filter, .placeholder = "Search downloads",
-                       .width = CUI_FILL, .autofocus = a->focus_search);
-            a->focus_search = false;
+                       .width = CUI_FILL, .autofocus = false);
             char shown[48];
             if (a->sel_count > 1) snprintf(shown, sizeof shown, "%d selected", a->sel_count);
             else snprintf(shown, sizeof shown, "%d shown", collect_rows(a, NULL, 0));
@@ -1650,7 +1757,7 @@ static void content(App *a, cui_ctx *ui) {
                 resume_selection(a);
             if (cui_icon_button(ui, CUI_ICON_TRASH_2, .size = CUI_SIZE_SM, .tooltip = "Remove",
                                 .disabled = a->sel_count == 0))
-                remove_selected(a);
+                request_remove(a);
         }
         download_table(a, ui);
     }
@@ -1847,17 +1954,67 @@ static bool theme_card(cui_ctx *ui, const GreedTheme *t, bool current) {
     return clicked;
 }
 
+/* The keymap is a reference, not a recorder: shortcuts are fixed for now. */
+static void keys_tab(App *a, cui_ctx *ui) {
+    static const char *cats[] = {"App", "List", "Nav", "Vim"};
+    static const cui_keymap_binding keys[] = {
+        {{CUI_MOD_PRIMARY, CUI_KEY_K}, "Palette", 0},
+        {{CUI_MOD_PRIMARY, CUI_KEY_N}, "Add", 0},
+        {{CUI_MOD_PRIMARY, CUI_KEY_COMMA}, "Settings", 0},
+        {{CUI_MOD_PRIMARY, CUI_KEY_B}, "Sidebar", 0},
+        {{CUI_MOD_PRIMARY, CUI_KEY_F}, "Search", 0},
+        {{CUI_MOD_PRIMARY, CUI_KEY_A}, "Select all", 0},
+        {{CUI_MOD_PRIMARY, CUI_KEY_Q}, "Quit", 0},
+        {{0, CUI_KEY_ESCAPE}, "Clear", 0},
+        {{CUI_MOD_SHIFT, CUI_KEY_SLASH}, "Shortcuts", 0},
+        {{0, CUI_KEY_SPACE}, "Pause", 1},
+        {{0, CUI_KEY_DELETE}, "Remove", 1},
+        {{0, CUI_KEY_ENTER}, "Details", 1},
+        {{0, CUI_KEY_UP}, "Up", 2},
+        {{0, CUI_KEY_DOWN}, "Down", 2},
+        {{CUI_MOD_PRIMARY, CUI_KEY_1}, "All", 2},
+        {{CUI_MOD_PRIMARY, CUI_KEY_2}, "Stats", 2},
+        {{CUI_MOD_PRIMARY, CUI_KEY_3}, "Scheduled", 2},
+        {{0, CUI_KEY_J}, "Down", 3},
+        {{0, CUI_KEY_K}, "Up", 3},
+        {{0, CUI_KEY_H}, "Prev tab", 3},
+        {{0, CUI_KEY_L}, "Next tab", 3},
+        {{0, CUI_KEY_G}, "Top x2", 3},
+        {{CUI_MOD_SHIFT, CUI_KEY_G}, "Bottom", 3},
+        {{CUI_MOD_CTRL, CUI_KEY_D}, "Page dn", 3},
+        {{CUI_MOD_CTRL, CUI_KEY_U}, "Page up", 3},
+        {{CUI_MOD_SHIFT, CUI_KEY_SEMICOLON}, "Palette", 3},
+        {{0, CUI_KEY_SLASH}, "Search", 3},
+        {{0, CUI_KEY_X}, "Toggle", 3},
+        {{0, CUI_KEY_D}, "Remove x2", 3},
+        {{0, CUI_KEY_O}, "Add", 3},
+    };
+    cui_switch(ui, "Vim keyboard mode", &a->edit.vim_mode,
+               .description = "j k to move, gg and G, Ctrl D and U, x, dd, / and :.");
+    cui_text(ui, "Vim mode treats the download list like a buffer. Destructive keys ask first.",
+             .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
+    cui_keymap(ui, "settings-keymap", keys, (int)(sizeof keys / sizeof keys[0]),
+               .categories = cats, .category_count = 4);
+    cui_muted(ui, "Every action here also lives in the command palette.");
+}
+
 static void settings_dialog(App *a, cui_ctx *ui) {
     if (!a->show_settings) return;
-    static const char *tabs[] = {"General", "Bandwidth", "Torrents", "Appearance"};
+    static const char *tabs[] = {"General", "Bandwidth", "Torrents", "Appearance", "Keys"};
     static const char *icons[] = {CUI_ICON_SETTINGS, CUI_ICON_SLIDERS_HORIZONTAL,
-                                  CUI_ICON_GLOBE, CUI_ICON_PALETTE};
+                                  CUI_ICON_GLOBE, CUI_ICON_PALETTE, CUI_ICON_KEYBOARD};
     float body_h = cui_viewport_size(ui).y > 760 ? 430 : 300;
-    cui_dialog(ui, "Settings", &a->show_settings, .width = 640) {
-        cui_tabs(ui, "settings-tabs", tabs, 4, &a->settings_tab, .icons = icons);
+    cui_dialog(ui, "Settings", &a->show_settings, .width = 680) {
+        cui_tabs(ui, "settings-tabs", tabs, 5, &a->settings_tab, .icons = icons);
         if (a->settings_seen_tab != a->settings_tab) {
             cui_scroll_to(ui, "settings-body", 0);
             a->settings_seen_tab = a->settings_tab;
+        }
+        /* Scroll id is hashed inside the dialog scope, so it must be moved here. */
+        if (!cui_wants_keyboard(ui)) {
+            float page = body_h * 0.75f;
+            if (cui_key_pressed(ui, CUI_KEY_PAGE_DOWN)) cui_scroll_by(ui, "settings-body", page);
+            else if (cui_key_pressed(ui, CUI_KEY_PAGE_UP)) cui_scroll_by(ui, "settings-body", -page);
         }
         cui_scroll(ui, .id = "settings-body", .width = CUI_FILL, .height = CUI_PX(body_h),
                    .gap = 16, .fade_edges = true,
@@ -1964,7 +2121,31 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                     a->edit.seed_ratio = ratio;
                 cui_muted(ui, "aria2 stops a torrent when its uploaded bytes reach this "
                               "multiple of the downloaded bytes.");
-            } else {
+            } else if (a->settings_tab == 3) {
+                cui_heading(ui, "Typography", 4);
+                static const char *font_opts[] = {"Default", "Sans", "Serif", "Mono"};
+                cui_label(ui, "Font");
+                if (cui_segmented(ui, "font-preset", font_opts, 4, &a->font_pick,
+                                  .size = CUI_SIZE_SM)) {
+                    static const char *font_names[] = {"default", "sans", "serif", "mono"};
+                    snprintf(a->edit.font, sizeof a->edit.font, "%s", font_names[a->font_pick]);
+                }
+                cui_muted(ui, "Default uses the fonts Greed ships with. The others come from "
+                              "your system.");
+                float text_pct = a->edit.text_scale * 100.0f;
+                if (cui_slider(ui, "Text size", &text_pct, 85, 130, .step = 5,
+                               .show_value = true, .format = "%.0f%%", .width = CUI_FILL))
+                    a->edit.text_scale = text_pct / 100.0f;
+                static const char *space_opts[] = {"Compact", "Cozy", "Spacious"};
+                static const float space_values[] = {0.9f, 1.0f, 1.12f};
+                cui_label(ui, "Spacing");
+                if (cui_segmented(ui, "spacing-preset", space_opts, 3, &a->spacing_pick,
+                                  .size = CUI_SIZE_SM))
+                    a->edit.spacing = space_values[a->spacing_pick];
+                cui_muted(ui, "Spacing scales buttons, rows and page margins. Changes preview "
+                              "instantly; Save keeps them.");
+
+                cui_heading(ui, "Theme", 4);
                 static const char *filters[] = {"All", "Dark", "Light"};
                 cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
                     cui_search(ui, "theme-search", a->theme_query, sizeof a->theme_query,
@@ -1996,6 +2177,8 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                         }
                     }
                 }
+            } else {
+                keys_tab(a, ui);
             }
         }
         cui_dialog_footer(ui) {
@@ -2023,6 +2206,7 @@ static void info_dialog(App *a, cui_ctx *ui) {
     cui_dialog(ui, "Download info", &a->show_info, .width = 560) {
         cui_text(ui, d->name, .font = CUI_FONT_MEDIUM, .size = 15, .line_height = 1.3f);
         cui_row(ui, .gap = 8, .align = CUI_ALIGN_CENTER) {
+            if (!strcmp(download_status_label(d), "Metadata")) cui_spinner(ui, 14);
             cui_badge(ui, download_status_label(d), .tone = status_tone(d), .dot = true);
         }
         double p = download_progress(d);
@@ -2098,24 +2282,283 @@ static void select_all(App *a) {
     a->details_open = a->sel_count > 0;
 }
 
+/* Removing is destructive, so the list buttons and keys all come through here. */
+static void request_remove(App *a) {
+    if (!a->sel_count) {
+        set_status(a, "Select a download first");
+        return;
+    }
+    a->show_remove = true;
+}
+
+static void remove_dialog(App *a, cui_ctx *ui) {
+    if (!a->show_remove) return;
+    char desc[320];
+    if (a->sel_count == 1) {
+        Download *d = find_item(a, a->sel[0]);
+        snprintf(desc, sizeof desc, "Remove %s from the list? The file on disk stays.",
+                 d ? d->name : "this download");
+    } else {
+        snprintf(desc, sizeof desc,
+                 "Remove %d downloads from the list? The files on disk stay.", a->sel_count);
+    }
+    cui_dialog(ui, "Remove downloads", &a->show_remove, .width = 460, .description = desc) {
+        cui_dialog_footer(ui) {
+            if (cui_button(ui, "Cancel", .variant = CUI_BUTTON_GHOST)) a->show_remove = false;
+            if (cui_button(ui, "Remove", .variant = CUI_BUTTON_DANGER)) {
+                int n = a->sel_count;
+                remove_selected(a);
+                a->show_remove = false;
+                set_status(a, "Removed %d download%s", n, n == 1 ? "" : "s");
+            }
+        }
+    }
+}
+
+enum {
+    CMD_ADD, CMD_SEARCH, CMD_PAUSE, CMD_RESUME, CMD_REMOVE, CMD_SELECT_ALL, CMD_CLEAR,
+    CMD_DOWNLOADS, CMD_STATS, CMD_SCHEDULED, CMD_SIDEBAR, CMD_SETTINGS, CMD_KEYS,
+    CMD_VIM, CMD_ENGINE, CMD_QUIT,
+};
+
+static int palette_commands(const App *a, cui_command *out, int *ids) {
+    static char vim[40], engine[40];
+    snprintf(vim, sizeof vim, "%s Vim mode", a->cfg.vim_mode ? "Turn off" : "Turn on");
+    snprintf(engine, sizeof engine, "%s aria2", a->connected ? "Reconnect to" : "Start");
+    int n = 0;
+#define CMD(id, t, ic, g, s) do { ids[n] = (id); out[n++] = (cui_command){(t), (ic), (g), (s)}; } while (0)
+    CMD(CMD_ADD, "New download", CUI_ICON_PLUS, "Downloads", "Ctrl N");
+    CMD(CMD_SEARCH, "Search downloads", CUI_ICON_SEARCH, "Downloads", "Ctrl F");
+    CMD(CMD_PAUSE, "Pause selected", CUI_ICON_PAUSE, "Downloads", "Space");
+    CMD(CMD_RESUME, "Resume selected", CUI_ICON_PLAY, "Downloads", "");
+    CMD(CMD_REMOVE, "Remove selected", CUI_ICON_TRASH_2, "Downloads", "Delete");
+    CMD(CMD_SELECT_ALL, "Select all", CUI_ICON_SQUARE_CHECK, "Selection", "Ctrl A");
+    CMD(CMD_CLEAR, "Clear selection", CUI_ICON_X, "Selection", "Esc");
+    CMD(CMD_DOWNLOADS, "Go to downloads", CUI_ICON_LAYERS, "Go", "Ctrl 1");
+    CMD(CMD_STATS, "Go to statistics", CUI_ICON_CHART_LINE, "Go", "Ctrl 2");
+    CMD(CMD_SCHEDULED, "Go to scheduled", CUI_ICON_CALENDAR, "Go", "Ctrl 3");
+    CMD(CMD_SIDEBAR, a->sidebar_open ? "Hide sidebar" : "Show sidebar", CUI_ICON_PANEL_LEFT,
+        "View", "Ctrl B");
+    CMD(CMD_SETTINGS, "Settings", CUI_ICON_SETTINGS, "Settings", "Ctrl ,");
+    CMD(CMD_KEYS, "Keyboard shortcuts", CUI_ICON_KEYBOARD, "Settings", "?");
+    CMD(CMD_VIM, vim, CUI_ICON_KEYBOARD, "Settings", "");
+    CMD(CMD_ENGINE, engine, CUI_ICON_PLAY, "Settings", "");
+    CMD(CMD_QUIT, "Quit Greed", CUI_ICON_X, "App", "Ctrl Q");
+#undef CMD
+    return n;
+}
+
+static void run_command(App *a, int cmd) {
+    switch (cmd) {
+    case CMD_ADD: open_add(a); break;
+    case CMD_SEARCH: a->view = VIEW_DOWNLOADS; a->focus_search = true; break;
+    case CMD_PAUSE:
+        if (!a->sel_count) set_status(a, "Select a download first");
+        else pause_selection(a);
+        break;
+    case CMD_RESUME:
+        if (!a->sel_count) set_status(a, "Select a download first");
+        else resume_selection(a);
+        break;
+    case CMD_REMOVE: request_remove(a); break;
+    case CMD_SELECT_ALL: select_all(a); break;
+    case CMD_CLEAR: selection_clear(a); a->details_open = false; break;
+    case CMD_DOWNLOADS: a->view = VIEW_DOWNLOADS; break;
+    case CMD_STATS: a->view = VIEW_STATS; break;
+    case CMD_SCHEDULED: a->view = VIEW_SCHEDULED; break;
+    case CMD_SIDEBAR: a->sidebar_open = !a->sidebar_open; break;
+    case CMD_SETTINGS: open_settings(a); break;
+    case CMD_KEYS:
+        open_settings(a);
+        a->settings_tab = 4;
+        break;
+    case CMD_VIM:
+        a->cfg.vim_mode = !a->cfg.vim_mode;
+        a->edit.vim_mode = a->cfg.vim_mode;
+        config_save(&a->cfg);
+        set_status(a, a->cfg.vim_mode ? "Vim keyboard mode on" : "Vim keyboard mode off");
+        break;
+    case CMD_ENGINE: start_engine(a); break;
+    case CMD_QUIT: cui_app_quit(NULL); break;
+    }
+}
+
+static void command_palette(App *a, cui_ctx *ui) {
+    static cui_command cmds[32];
+    int ids[32];
+    int n = palette_commands(a, cmds, ids);
+    int chosen = cui_command_palette(ui, &a->show_palette, cmds, n);
+    if (chosen >= 0) run_command(a, ids[chosen]);
+}
+
+/* ---- keyboard cursor over the download table ---- */
+
+static int cursor_index(App *a, int *count) {
+    int rows[512];
+    int n = collect_rows(a, rows, 512);
+    if (count) *count = n;
+    for (int i = 0; i < n; i++)
+        if (!strcmp(a->items[rows[i]].gid, a->selected)) return i;
+    return -1;
+}
+
+static void cursor_to(App *a, cui_ctx *ui, int idx) {
+    int rows[512];
+    int n = collect_rows(a, rows, 512);
+    if (!n) return;
+    if (idx < 0) idx = 0;
+    if (idx >= n) idx = n - 1;
+    selection_set(a, a->items[rows[idx]].gid);
+    a->details_open = true;
+    float row_h = active_cfg(a)->spacing < 0.96f ? 36.0f : 44.0f;
+    cui_scroll_show(ui, "downloads", "#body", idx * (row_h + 1.0f), row_h);
+}
+
+static void cursor_move(App *a, cui_ctx *ui, int delta) {
+    int n = 0;
+    int cur = cursor_index(a, &n);
+    if (cur < 0) cursor_to(a, ui, delta < 0 ? n - 1 : 0);
+    else cursor_to(a, ui, cur + delta);
+}
+
+static bool plain_key(cui_ctx *ui, cui_key key) {
+    return cui_shortcut(ui, 0, key);
+}
+
+static void list_keys(App *a, cui_ctx *ui, bool vim) {
+    if (a->view != VIEW_DOWNLOADS) return;
+    int n = 0;
+    int cur = cursor_index(a, &n);
+    if (!n) {
+        if (cui_key_pressed(ui, CUI_KEY_ENTER)) open_add(a);
+        return;
+    }
+    int base = cur < 0 ? 0 : cur;
+    if (cui_key_pressed(ui, CUI_KEY_DOWN) || (vim && plain_key(ui, CUI_KEY_J)))
+        cursor_move(a, ui, 1);
+    else if (cui_key_pressed(ui, CUI_KEY_UP) || (vim && plain_key(ui, CUI_KEY_K)))
+        cursor_move(a, ui, -1);
+    else if (cui_key_pressed(ui, CUI_KEY_HOME))
+        cursor_to(a, ui, 0);
+    else if (cui_key_pressed(ui, CUI_KEY_END) ||
+             (vim && cui_shortcut(ui, CUI_MOD_SHIFT, CUI_KEY_G)))
+        cursor_to(a, ui, n - 1);
+    else if (cui_key_pressed(ui, CUI_KEY_PAGE_DOWN) ||
+             (vim && cui_shortcut(ui, CUI_MOD_CTRL, CUI_KEY_D)) ||
+             (vim && cui_shortcut(ui, CUI_MOD_CTRL, CUI_KEY_F)))
+        cursor_to(a, ui, base + 10);
+    else if (cui_key_pressed(ui, CUI_KEY_PAGE_UP) ||
+             (vim && cui_shortcut(ui, CUI_MOD_CTRL, CUI_KEY_U)) ||
+             (vim && cui_shortcut(ui, CUI_MOD_CTRL, CUI_KEY_B)))
+        cursor_to(a, ui, base - 10);
+    if (cui_key_pressed(ui, CUI_KEY_ENTER) && a->selected[0]) a->details_open = true;
+
+    if (!vim) return;
+    if (plain_key(ui, CUI_KEY_H)) {
+        a->tab = (a->tab + TAB_COUNT - 1) % TAB_COUNT;
+        a->view = VIEW_DOWNLOADS;
+    }
+    if (plain_key(ui, CUI_KEY_L)) {
+        a->tab = (a->tab + 1) % TAB_COUNT;
+        a->view = VIEW_DOWNLOADS;
+    }
+    double now = cui_time(ui);
+    if (plain_key(ui, CUI_KEY_G)) {
+        if (a->pending_key == CUI_KEY_G && now - a->pending_at < 0.8) {
+            cursor_to(a, ui, 0);
+            a->pending_key = 0;
+        } else {
+            a->pending_key = CUI_KEY_G;
+            a->pending_at = now;
+        }
+    }
+    if (plain_key(ui, CUI_KEY_D)) {
+        if (a->pending_key == CUI_KEY_D && now - a->pending_at < 0.8) {
+            a->pending_key = 0;
+            request_remove(a);
+        } else {
+            a->pending_key = CUI_KEY_D;
+            a->pending_at = now;
+        }
+    }
+    if (plain_key(ui, CUI_KEY_X) && a->selected[0]) {
+        Download *d = find_item(a, a->selected);
+        if (d) selection_toggle(a, d->gid);
+    }
+    if (plain_key(ui, CUI_KEY_SLASH)) a->focus_search = true;
+    if (plain_key(ui, CUI_KEY_O)) open_add(a);
+}
+
 static void handle_keys(App *a, cui_ctx *ui) {
-    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_N)) open_add(a);
-    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_B)) a->sidebar_open = !a->sidebar_open;
-    if (!cui_wants_keyboard(ui) && cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_A)) select_all(a);
-    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_F)) {
+    if (a->show_settings) return;
+    if (a->show_add || a->show_schedule || a->show_info || a->show_remove)
+        return;
+    if (a->show_palette) return;
+
+    bool vim = a->cfg.vim_mode;
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_K) ||
+        (vim && !cui_wants_keyboard(ui) &&
+         cui_shortcut(ui, CUI_MOD_SHIFT, CUI_KEY_SEMICOLON))) {
+        a->show_palette = true;
+        return;
+    }
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_COMMA)) {
+        open_settings(a);
+        return;
+    }
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_N)) {
+        open_add(a);
+        return;
+    }
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_F) && !vim) {
         a->view = VIEW_DOWNLOADS;
         a->focus_search = true;
     }
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_B) && !vim)
+        a->sidebar_open = !a->sidebar_open;
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_Q)) {
+        cui_app_quit(NULL);
+        return;
+    }
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_1)) {
+        a->tab = TAB_ALL;
+        a->view = VIEW_DOWNLOADS;
+    }
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_2)) a->view = VIEW_STATS;
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_3)) a->view = VIEW_SCHEDULED;
     if (cui_wants_keyboard(ui)) return;
-    if (cui_key_pressed(ui, CUI_KEY_DELETE)) remove_selected(a);
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_A)) select_all(a);
+    if (cui_shortcut(ui, CUI_MOD_SHIFT, CUI_KEY_SLASH)) {
+        open_settings(a);
+        a->settings_tab = 4;
+        return;
+    }
+    if (cui_key_pressed(ui, CUI_KEY_DELETE)) request_remove(a);
     if (cui_key_pressed(ui, CUI_KEY_SPACE)) toggle_selected(a);
-    if (cui_key_pressed(ui, CUI_KEY_ESCAPE)) selection_clear(a);
+    if (cui_key_pressed(ui, CUI_KEY_ESCAPE)) {
+        selection_clear(a);
+        a->details_open = false;
+    }
+    list_keys(a, ui, vim);
 }
 
 static void frame(cui_ctx *ui, void *user) {
     App *a = user;
-    apply_theme(ui, a->show_settings ? a->edit.theme : a->cfg.theme,
-                a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed);
+    apply_theme(ui, a);
+    apply_typography(a, ui);
+
+    /* At the root, overlay coordinates are window coordinates, matching the cursor. */
+    if (a->drag_active && a->drag_moved) {
+        cui_vec2 mp = cui_mouse_pos(ui);
+        cui_rect band = {
+            a->drag_x < mp.x ? a->drag_x : mp.x,
+            a->drag_y < mp.y ? a->drag_y : mp.y,
+            fabsf(mp.x - a->drag_x),
+            fabsf(mp.y - a->drag_y),
+        };
+        cui_color accent = cui_color_of(ui, CUI_COLOR_ACCENT);
+        cui_overlay_rect(ui, band, 3, cui_alpha(accent, 0.12f), cui_alpha(accent, 0.55f), 1);
+    }
 
     if (!a->frame_ready) {
         void *native = cui_app_native_window(NULL);
@@ -2174,6 +2617,8 @@ static void frame(cui_ctx *ui, void *user) {
     schedule_dialog(a, ui);
     settings_dialog(a, ui);
     info_dialog(a, ui);
+    remove_dialog(a, ui);
+    command_palette(a, ui);
 }
 
 int ui_run(void) {
@@ -2206,7 +2651,11 @@ int ui_run(void) {
     } else if (demo && !strcmp(demo, "settings-appearance")) {
         open_settings(a);
         a->settings_tab = 3;
-    } else if (demo && !strcmp(demo, "details")) a->demo_details = true;
+    } else if (demo && !strcmp(demo, "settings-keys")) {
+        open_settings(a);
+        a->settings_tab = 4;
+    } else if (demo && !strcmp(demo, "palette")) a->show_palette = true;
+    else if (demo && !strcmp(demo, "details")) a->demo_details = true;
     else if (demo && !strcmp(demo, "stats")) a->view = VIEW_STATS;
     else if (demo && !strcmp(demo, "scheduled")) a->view = VIEW_SCHEDULED;
     else if (demo && !strcmp(demo, "scheduled-add")) {

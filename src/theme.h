@@ -19,7 +19,9 @@ extern const GreedTheme greed_themes[];
 extern const int greed_theme_count;
 
 const GreedTheme *greed_theme_find(const char *name);
-/* motion_speed: 1 = normal, higher is faster (CUI's motion token is slower-is-higher). */
-void greed_theme_apply(cui_ctx *ui, const GreedTheme *theme, float motion_speed);
+/* motion_speed: 1 = normal, higher is faster (CUI's motion token is slower-is-higher).
+ * text_scale multiplies every text size; spacing scales control heights. */
+void greed_theme_apply(cui_ctx *ui, const GreedTheme *theme, float motion_speed,
+                       float text_scale, float spacing);
 
 #endif

@@ -104,13 +104,17 @@ bool frame_is_maximized(GreedFrame *f) {
         if (a == horz) horz_on = true;
     }
     if (data) XFree(data);
-    return vert_on && horz_on;
+    return vert_on || horz_on;
 }
 
 void frame_toggle_maximize(GreedFrame *f) {
     if (!f->dpy) return;
     Atom vert = XInternAtom(f->dpy, "_NET_WM_STATE_MAXIMIZED_VERT", False);
     Atom horz = XInternAtom(f->dpy, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
-    /* _NET_WM_STATE: 1 = toggle, then the two properties, then source */
-    send_root_message(f, "_NET_WM_STATE", 1, (long)vert, (long)horz, 2, 0);
+    /* Ask for the state we want instead of toggling: a stale property or a WM
+     * that already dropped one axis then makes a toggle add it again. Source 1
+     * is an application request; some WMs ignore anything else. */
+    long action = frame_is_maximized(f) ? 0 : 1;
+    send_root_message(f, "_NET_WM_STATE", action, (long)vert, (long)horz, 1, 0);
+    XSync(f->dpy, False);
 }

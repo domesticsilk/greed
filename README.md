@@ -14,10 +14,13 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
 - **aria2 core**: HTTP/HTTPS/FTP, BitTorrent, Metalink; resume, multi-connection, checksums
 - **Bundled aria2**: `vendor/aria2/` ships with the repo; falls back to a system `aria2c`
 - **Frameless window**: the title bar is drawn inside the app, with drag, minimize, maximize and edge resize
-- **GUI**: Witch's Ink theme, sidebar tabs (All/Active/Waiting/Stopped/Complete), a searchable
-  download table with progress, speed, ETA and status, a per-download details pane and a live
-  transfer sparkline in the sidebar
-- **Bulk actions**: check several downloads and pause, resume or remove them in one go
+- **GUI**: 76 themes (default Dark Mono), sidebar tabs (All/Active/Waiting/Stopped/Complete), a
+  searchable download table with progress, speed, ETA and status, a per-download details pane and
+  a live transfer sparkline in the sidebar
+- **Keyboard first**: a command palette, full list navigation and an optional Vim mode; every
+  destructive action asks first
+- **Bulk actions**: drag a selection band or check several downloads, then pause, resume or
+  remove them in one go
 - **CLI**: `greed add/list/status/pause/resume/remove/stats/shutdown`, with `--json` for
   `list` and `status`
 - **Torrents**: magnet links and `.torrent` files (file contents are base64-encoded for aria2)
@@ -27,7 +30,8 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
 - **Statistics**: 60-second throughput chart with peak marker, live download/upload speeds and a
   download-folder card with free space and an Open folder button
 - **Scheduled downloads**: presets or an exact date and time; Greed hands the link to aria2 when it is due
-- **Settings**: General, Bandwidth and Torrents tabs with sliders, switches and limits
+- **Settings**: General, Bandwidth, Torrents, Appearance and Keys tabs; theme, font family,
+  text size, spacing, motion, engine limits and a keymap diagram
 - **Clipboard monitoring**: offers a toast when a link is copied (toggleable)
 - **Notifications**: desktop notification when a download completes (toggleable)
 - **Session persistence**: the queue survives restarts through aria2's session file
@@ -87,8 +91,26 @@ greed shutdown                     # stop the aria2 engine
 `greed` with no arguments opens the GUI when `DISPLAY` or `WAYLAND_DISPLAY` is set, and
 prints help otherwise.
 
-Keyboard shortcuts: `Ctrl+N` add, `Ctrl+F` search, `Space` pause/resume, `Delete` remove,
-`Esc` close details.
+Keyboard shortcuts:
+
+| Where | Keys | Action |
+| --- | --- | --- |
+| Anywhere | `Ctrl+K` | Command palette |
+| Anywhere | `Ctrl+N` / `Ctrl+,` | Add download / Settings |
+| Anywhere | `Ctrl+B` | Toggle sidebar |
+| Anywhere | `Ctrl+1` `Ctrl+2` `Ctrl+3` | Downloads / Statistics / Scheduled |
+| Anywhere | `?` / `Ctrl+Q` | Shortcuts / quit |
+| List | `Up` `Down` `Home` `End` `PgUp` `PgDn` | Move the cursor |
+| List | `Enter` / `Space` / `Delete` | Details / pause or resume / remove |
+| List | `Ctrl+A` | Select all |
+| Vim mode | `j` `k` `gg` `G` | Move the cursor |
+| Vim mode | `Ctrl+D` `Ctrl+U` | Page down / up |
+| Vim mode | `h` `l` | Previous / next tab |
+| Vim mode | `x` / `dd` / `o` / `/` | Toggle / remove / add / search |
+| Vim mode | `:` | Command palette |
+| No Vim | `Ctrl+F` | Search |
+
+`Esc` clears the selection or closes the open dialog. Settings scrolls with `PgUp`/`PgDn`.
 
 ## Configuration
 
@@ -105,9 +127,19 @@ Keyboard shortcuts: `Ctrl+N` add, `Ctrl+F` search, `Space` pause/resume, `Delete
   "seed_ratio": 1.0,
   "auto_start_aria2": true,
   "clipboard_monitor": true,
-  "notify_on_complete": true
+  "notify_on_complete": true,
+  "verify_after_complete": true,
+  "theme": "Dark Mono",
+  "font": "default",
+  "text_scale": 1.0,
+  "spacing": 1.0,
+  "motion_speed": 1.0,
+  "vim_mode": false
 }
 ```
+
+`font` is one of `default`, `sans`, `serif` or `mono`; `text_scale` ranges from 0.85 to 1.3 and
+`spacing` from 0.9 to 1.12. The same values can be changed in Settings > Appearance.
 
 The limits are in KB/s; 0 means unlimited. The aria2 session is saved next to it as
 `aria2.session`. The same directory and format are used by the earlier Rust version.
