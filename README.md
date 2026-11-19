@@ -25,6 +25,7 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
   with a live throughput chart that draws the cap on the line
 - **Seeding** — keep sharing completed torrents up to a chosen ratio
 - **Statistics** — live transfer chart, downloads-by-state donut and a disk-space meter
+- **Scheduled downloads** — pick a date and time; Greed hands the link to aria2 when it is due
 - **Settings** — General, Bandwidth and Torrents tabs with sliders, switches and limits
 - **Clipboard monitoring** — offers a toast when a link is copied (toggleable)
 - **Notifications** — desktop notification when a download completes (toggleable)

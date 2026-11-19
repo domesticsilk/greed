@@ -27,6 +27,12 @@ const char *config_path(void) {
     return path;
 }
 
+static const char *schedules_path(void) {
+    static char path[PATH_MAX];
+    snprintf(path, sizeof path, "%s/schedules.json", config_dir());
+    return path;
+}
+
 void config_expand_tilde(char *path) {
     if (path[0] != '~') return;
     const char *home = getenv("HOME");
@@ -148,5 +154,68 @@ bool config_save(const Config *c) {
         fclose(f);
     }
     json_object_put(v);
+    return ok;
+}
+
+int config_schedules_load(GreedScheduled *out, int cap) {
+    FILE *f = fopen(schedules_path(), "r");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0) {
+        fclose(f);
+        return 0;
+    }
+    char *text = malloc((size_t)size + 1);
+    int n = 0;
+    if (text) {
+        size_t got = fread(text, 1, (size_t)size, f);
+        text[got] = 0;
+        struct json_object *v = json_tokener_parse(text);
+        if (v && json_object_is_type(v, json_type_array)) {
+            int len = (int)json_object_array_length(v);
+            for (int i = 0; i < len && n < cap; i++) {
+                struct json_object *o = json_object_array_get_idx(v, i);
+                const char *url = jstr(o, "url");
+                struct json_object *due_obj = NULL;
+                long long due = 0;
+                if (json_object_object_get_ex(o, "due", &due_obj))
+                    due = (long long)json_object_get_int64(due_obj);
+                if (!url || !url[0] || due <= 0) continue;
+                snprintf(out[n].url, sizeof out[n].url, "%s", url);
+                const char *dir = jstr(o, "dir");
+                snprintf(out[n].dir, sizeof out[n].dir, "%s", dir ? dir : "");
+                config_expand_tilde(out[n].dir);
+                out[n].due = due;
+                n++;
+            }
+        }
+        if (v) json_object_put(v);
+        free(text);
+    }
+    fclose(f);
+    return n;
+}
+
+bool config_schedules_save(const GreedScheduled *items, int count) {
+    mkdir(config_dir(), 0755);
+    struct json_object *arr = json_object_new_array();
+    for (int i = 0; i < count; i++) {
+        struct json_object *o = json_object_new_object();
+        json_object_object_add(o, "url", json_object_new_string(items[i].url));
+        json_object_object_add(o, "dir", json_object_new_string(items[i].dir));
+        json_object_object_add(o, "due", json_object_new_int64(items[i].due));
+        json_object_array_add(arr, o);
+    }
+    const char *text = json_object_to_json_string_ext(arr, JSON_C_TO_STRING_PRETTY);
+    FILE *f = fopen(schedules_path(), "w");
+    bool ok = false;
+    if (f) {
+        ok = fputs(text, f) >= 0;
+        fputc('\n', f);
+        fclose(f);
+    }
+    json_object_put(arr);
     return ok;
 }

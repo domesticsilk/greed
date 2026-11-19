@@ -20,9 +20,11 @@
 #include <string.h>
 #include <sys/statvfs.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 enum { TAB_ALL, TAB_ACTIVE, TAB_WAITING, TAB_STOPPED, TAB_COMPLETE, TAB_COUNT };
+enum { VIEW_DOWNLOADS, VIEW_STATS, VIEW_SCHEDULED };
 enum { HIST = 72 };
 
 typedef struct {
@@ -41,7 +43,15 @@ typedef struct {
     bool connected;
     bool engine_applied;
     int tab;
-    bool show_stats;
+    int view;
+    GreedScheduled sched[GREED_MAX_SCHEDULED];
+    int sched_count;
+    long long sched_check;
+    bool show_schedule;
+    char sched_url[2048];
+    cui_date sched_date;
+    int sched_hour;
+    int sched_min;
     char filter[128];
     bool focus_search;
     char selected[32];
@@ -459,9 +469,10 @@ static bool is_torrent_path(const char *s) {
     return n > 8 && !strcmp(s + n - 8, ".torrent");
 }
 
-static void add_links(App *a, const char *text, const char *dir, const char *out, int conn) {
+static int add_links_impl(App *a, const char *text, const char *dir, const char *out, int conn,
+                          bool ui_feedback) {
     char *copy = strdup(text);
-    if (!copy) return;
+    if (!copy) return 0;
     bool single = !strchr(text, '\n');
     int added = 0;
     char err[256] = {0};
@@ -518,17 +529,60 @@ static void add_links(App *a, const char *text, const char *dir, const char *out
         set_status(a, "Added %d, error: %s", added, err);
     } else {
         set_status(a, "Added %d download%s", added, added == 1 ? "" : "s");
-        a->add_urls[0] = 0;
-        a->add_name[0] = 0;
-        a->show_add = false;
+        if (ui_feedback) {
+            a->add_urls[0] = 0;
+            a->add_name[0] = 0;
+            a->show_add = false;
+        }
     }
     a->last_poll = 0;
+    return added;
+}
+
+static int add_links(App *a, const char *text, const char *dir, const char *out, int conn) {
+    return add_links_impl(a, text, dir, out, conn, true);
+}
+
+/* Fire everything that is due; entries stay queued while aria2 is offline. */
+static void schedule_tick(App *a) {
+    long long now = (long long)time(NULL);
+    if (now == a->sched_check) return;
+    a->sched_check = now;
+    if (!a->sched_count || !a->connected) return;
+
+    int w = 0, fired = 0;
+    for (int i = 0; i < a->sched_count; i++) {
+        if (a->sched[i].due > now ||
+            add_links_impl(a, a->sched[i].url, a->sched[i].dir, NULL,
+                           a->cfg.max_concurrent, false) <= 0) {
+            if (w != i) a->sched[w] = a->sched[i];
+            w++;
+            continue;
+        }
+        fired++;
+    }
+    if (fired) {
+        a->sched_count = w;
+        config_schedules_save(a->sched, a->sched_count);
+        set_status(a, "Started %d scheduled download%s", fired, fired == 1 ? "" : "s");
+    }
 }
 
 static void open_add(App *a) {
     a->show_add = true;
     snprintf(a->add_dir, sizeof a->add_dir, "%s", a->cfg.download_dir);
     a->add_conn = a->cfg.max_concurrent;
+}
+
+static void open_schedule(App *a) {
+    a->show_schedule = true;
+    a->sched_url[0] = 0;
+    time_t due = time(NULL) + 3600;
+    struct tm t;
+    localtime_r(&due, &t);
+    a->sched_date = (cui_date){t.tm_year + 1900, t.tm_mon + 1, t.tm_mday};
+    a->sched_hour = t.tm_hour;
+    a->sched_min = t.tm_min;
 }
 
 static void open_settings(App *a) {
@@ -788,17 +842,24 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
             if (counts[t] > 0) snprintf(badge, sizeof badge, "%d", counts[t]);
             if (cui_nav_item(ui, tab_names[t], .icon = tab_icons[t],
                              .badge = badge[0] ? badge : NULL,
-                             .selected = !a->show_stats && a->tab == t, .group = "tabs")) {
+                             .selected = a->view == VIEW_DOWNLOADS && a->tab == t,
+                             .group = "tabs")) {
                 a->tab = t;
-                a->show_stats = false;
+                a->view = VIEW_DOWNLOADS;
             }
         }
+        char sched_badge[16] = {0};
+        if (a->sched_count) snprintf(sched_badge, sizeof sched_badge, "%d", a->sched_count);
+        if (cui_nav_item(ui, "Scheduled", .icon = CUI_ICON_CALENDAR,
+                         .badge = sched_badge[0] ? sched_badge : NULL,
+                         .selected = a->view == VIEW_SCHEDULED, .group = "tabs"))
+            a->view = VIEW_SCHEDULED;
         cui_box(ui, .height = CUI_PX(14)) {}
         cui_separator(ui);
         cui_nav_section(ui, "INSIGHTS");
         if (cui_nav_item(ui, "Statistics", .icon = CUI_ICON_CHART_LINE,
-                         .selected = a->show_stats, .group = "tabs"))
-            a->show_stats = true;
+                         .selected = a->view == VIEW_STATS, .group = "tabs"))
+            a->view = VIEW_STATS;
         cui_box(ui, .height = CUI_PX(14)) {}
         cui_separator(ui);
         cui_nav_section(ui, "TRANSFER");
@@ -847,9 +908,10 @@ static void kv(cui_ctx *ui, const char *key, const char *value) {
 static void details(App *a, cui_ctx *ui) {
     Download *d = find_item(a, a->selected);
     if (!d) a->details_open = false;
+    bool show = a->view == VIEW_DOWNLOADS && a->details_open && d;
     float width = cui_animate_spring(ui, cui_make_id(ui, "details-width"),
-                                     (a->details_open && d) ? 290.0f : 0.0f, 0.24f, 0.0f);
-    if (width <= 0.5f || !d) return;
+                                     show ? 290.0f : 0.0f, 0.24f, 0.0f);
+    if (width <= 0.5f || !show) return;
     /* Fade with the width so the clipped labels do not flash while closing. */
     float opacity = width / 290.0f;
     if (opacity > 1.0f) opacity = 1.0f;
@@ -1305,8 +1367,164 @@ static void stats_page(App *a, cui_ctx *ui, float opacity) {
     }
 }
 
+static void sched_name(const char *url, char *out, size_t cap) {
+    if (!strncmp(url, "magnet:", 7)) {
+        const char *dn = strstr(url, "dn=");
+        if (dn) {
+            dn += 3;
+            size_t o = 0;
+            while (*dn && *dn != '&' && o + 1 < cap) {
+                if (*dn == '%' && isxdigit((unsigned char)dn[1]) &&
+                    isxdigit((unsigned char)dn[2])) {
+                    char hex[3] = {dn[1], dn[2], 0};
+                    out[o++] = (char)strtol(hex, NULL, 16);
+                    dn += 3;
+                } else if (*dn == '+') {
+                    out[o++] = ' ';
+                    dn++;
+                } else {
+                    out[o++] = *dn++;
+                }
+            }
+            out[o] = 0;
+            if (o) return;
+        }
+        snprintf(out, cap, "Magnet link");
+        return;
+    }
+    const char *slash = strrchr(url, '/');
+    const char *name = slash && slash[1] ? slash + 1 : url;
+    size_t o = 0;
+    while (name[o] && name[o] != '?' && name[o] != '#' && o + 1 < cap) {
+        out[o] = name[o];
+        o++;
+    }
+    out[o] = 0;
+    if (!o) snprintf(out, cap, "Link");
+}
+
+static void fmt_sched_time(long long due, char *out, size_t cap) {
+    time_t t = (time_t)due;
+    struct tm tm;
+    localtime_r(&t, &tm);
+    strftime(out, cap, "%a %d %b · %H:%M", &tm);
+}
+
+static void fmt_countdown(long long secs, char *out, size_t cap) {
+    if (secs <= 0) {
+        snprintf(out, cap, "now");
+    } else if (secs < 60) {
+        snprintf(out, cap, "in <1m");
+    } else if (secs < 3600) {
+        snprintf(out, cap, "in %lldm", secs / 60);
+    } else if (secs < 86400) {
+        snprintf(out, cap, "in %lldh %02lldm", secs / 3600, (secs % 3600) / 60);
+    } else {
+        snprintf(out, cap, "in %lldd %lldh", secs / 86400, (secs % 86400) / 3600);
+    }
+}
+
+static void schedule_page(App *a, cui_ctx *ui, float opacity) {
+    long long now = (long long)time(NULL);
+    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14, .gap = 10,
+               .opacity = opacity) {
+        cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
+            cui_column(ui, .gap = 2) {
+                cui_heading(ui, "Scheduled downloads", 2);
+                cui_text(ui, "Queue links to start at a set time. Times are local.",
+                         .size = 12, .color = CUI_COLOR_TEXT_MUTED);
+            }
+            cui_spacer(ui);
+            if (cui_button(ui, "Schedule download", .icon = CUI_ICON_CALENDAR,
+                           .variant = CUI_BUTTON_PRIMARY))
+                open_schedule(a);
+        }
+        if (!a->connected && a->sched_count) {
+            cui_row(ui, .width = CUI_FILL, .bg = CUI_COLOR_SURFACE_RAISED, .border = 1,
+                    .border_color = CUI_COLOR_WARNING, .radius = 8, .pad_x = 12, .pad_y = 8,
+                    .gap = 10, .align = CUI_ALIGN_CENTER) {
+                cui_icon(ui, CUI_ICON_CIRCLE_ALERT, 16, CUI_COLOR_WARNING);
+                cui_text(ui, "aria2 is offline", .font = CUI_FONT_MEDIUM);
+                cui_text(ui, "Due downloads wait for the engine.", .size = 12,
+                         .color = CUI_COLOR_TEXT_SECONDARY);
+                cui_spacer(ui);
+                if (cui_button(ui, "Start aria2", .size = CUI_SIZE_SM)) start_engine(a);
+            }
+        }
+        if (a->sched_count == 0) {
+            cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_CENTER,
+                       .justify = CUI_JUSTIFY_CENTER, .gap = 10) {
+                cui_icon(ui, CUI_ICON_CALENDAR, 36, CUI_COLOR_TEXT_MUTED);
+                cui_text(ui, "No scheduled downloads", .font = CUI_FONT_MEDIUM, .size = 15);
+                cui_text(ui, "Pick a link and a start time; Greed adds it to aria2 for you.",
+                         .size = 12, .color = CUI_COLOR_TEXT_MUTED);
+                if (cui_button(ui, "Schedule a download", .icon = CUI_ICON_CALENDAR))
+                    open_schedule(a);
+            }
+        } else {
+            static const cui_table_column cols[] = {
+                {"NAME", CUI_FILL, CUI_TEXT_START, false},
+                {"STARTS", CUI_PX(170), CUI_TEXT_START, false},
+                {"IN", CUI_PX(96), CUI_TEXT_END, false},
+                {"STATUS", CUI_PX(140), CUI_TEXT_START, false},
+                {"", CUI_PX(36), CUI_TEXT_END, false},
+            };
+            int n = a->sched_count;
+            int remove_idx = -1;
+            cui_table(ui, "scheduled", cols, 5, .height = CUI_FILL, .striped = true,
+                      .compact = true) {
+                for (int i = 0; i < n; i++) {
+                    GreedScheduled *s = &a->sched[i];
+                    char name[256], when[64], in[48];
+                    sched_name(s->url, name, sizeof name);
+                    fmt_sched_time(s->due, when, sizeof when);
+                    fmt_countdown(s->due - now, in, sizeof in);
+                    bool overdue = s->due <= now;
+                    cui_table_row(ui, false);
+                    cui_table_cell_text(ui, name);
+                    cui_table_cell_text(ui, when);
+                    cui_table_cell(ui);
+                    {
+                        cui_text(ui, in, .size = 12,
+                                 .color = overdue ? CUI_COLOR_ACCENT : CUI_COLOR_TEXT_SECONDARY,
+                                 .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
+                    }
+                    cui_table_cell(ui);
+                    {
+                        const char *label = "Scheduled";
+                        cui_color tone = CUI_COLOR_TEXT_MUTED;
+                        if (overdue && a->connected) {
+                            label = "Starting…";
+                            tone = CUI_COLOR_ACCENT;
+                        } else if (overdue) {
+                            label = "Waiting for aria2";
+                            tone = CUI_COLOR_DANGER;
+                        }
+                        cui_text(ui, label, .size = 12, .color = tone);
+                    }
+                    cui_table_cell(ui);
+                    {
+                        if (cui_icon_button(ui, CUI_ICON_TRASH_2, .size = CUI_SIZE_SM,
+                                            .tooltip = "Remove schedule"))
+                            remove_idx = i;
+                    }
+                }
+            }
+            if (remove_idx >= 0) {
+                memmove(&a->sched[remove_idx], &a->sched[remove_idx + 1],
+                        (size_t)(a->sched_count - remove_idx - 1) * sizeof a->sched[0]);
+                a->sched_count--;
+                config_schedules_save(a->sched, a->sched_count);
+                set_status(a, "Schedule removed");
+            }
+        }
+        cui_text(ui, "Greed must be running at the scheduled time.", .size = 11,
+                 .color = CUI_COLOR_TEXT_MUTED);
+    }
+}
+
 static void content(App *a, cui_ctx *ui) {
-    int page = a->show_stats ? 1 : 0;
+    int page = a->view;
     if (page != a->page_key) {
         a->page_key = page;
         a->page_fade = 0.0f;
@@ -1314,8 +1532,12 @@ static void content(App *a, cui_ctx *ui) {
     float speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
     a->page_fade += (1.0f - a->page_fade) * (1.0f - expf(-cui_delta_time(ui) * 14.0f * speed));
     float page_opacity = a->page_fade > 0.999f ? 0.0f : (a->page_fade > 0.001f ? a->page_fade : 0.001f);
-    if (a->show_stats) {
+    if (a->view == VIEW_STATS) {
         stats_page(a, ui, page_opacity);
+        return;
+    }
+    if (a->view == VIEW_SCHEDULED) {
+        schedule_page(a, ui, page_opacity);
         return;
     }
 
@@ -1419,6 +1641,81 @@ static void add_dialog(App *a, cui_ctx *ui) {
             if (cui_button(ui, "Add", .variant = CUI_BUTTON_PRIMARY)) {
                 const char *name = a->add_name[0] ? a->add_name : NULL;
                 add_links(a, a->add_urls, a->add_dir, name, a->add_conn);
+            }
+        }
+    }
+}
+
+static time_t schedule_due(const App *a) {
+    struct tm t = {0};
+    t.tm_year = a->sched_date.year - 1900;
+    t.tm_mon = a->sched_date.month - 1;
+    t.tm_mday = a->sched_date.day;
+    t.tm_hour = a->sched_hour;
+    t.tm_min = a->sched_min;
+    t.tm_isdst = -1;
+    return mktime(&t);
+}
+
+static void schedule_dialog(App *a, cui_ctx *ui) {
+    if (!a->show_schedule) return;
+    time_t due = schedule_due(a);
+    time_t now = time(NULL);
+    bool valid = a->sched_url[0] && due > now;
+    char when[80] = {0};
+    if (due > 0) fmt_sched_time((long long)due, when, sizeof when);
+
+    cui_dialog(ui, "Schedule download", &a->show_schedule, .width = 580) {
+        cui_label(ui, "Link");
+        cui_input(ui, "sched-url", a->sched_url, sizeof a->sched_url,
+                  .placeholder = "https://example.com/file.iso or magnet link");
+        cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_END) {
+            cui_date_picker(ui, "sched-date", &a->sched_date, .label = "Date",
+                            .width = CUI_PX(190));
+            char hour_buf[24][3];
+            const char *hours[24];
+            for (int i = 0; i < 24; i++) {
+                snprintf(hour_buf[i], sizeof hour_buf[i], "%02d", i);
+                hours[i] = hour_buf[i];
+            }
+            char min_buf[60][3];
+            const char *minutes[60];
+            for (int i = 0; i < 60; i++) {
+                snprintf(min_buf[i], sizeof min_buf[i], "%02d", i);
+                minutes[i] = min_buf[i];
+            }
+            cui_select(ui, "sched-hour", hours, 24, &a->sched_hour, .label = "Hour",
+                       .width = CUI_PX(90));
+            cui_select(ui, "sched-minute", minutes, 60, &a->sched_min, .label = "Minute",
+                       .width = CUI_PX(90));
+        }
+        if (due <= now) {
+            cui_text(ui, "Choose a time in the future.", .size = 12,
+                     .color = CUI_COLOR_DANGER);
+        } else if (when[0]) {
+            char line[128];
+            snprintf(line, sizeof line, "Starts %s", when);
+            cui_text(ui, line, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
+        }
+        cui_text(ui, "Greed must be running when the time comes.", .size = 11,
+                 .color = CUI_COLOR_TEXT_MUTED);
+        cui_dialog_footer(ui) {
+            if (cui_button(ui, "Cancel", .variant = CUI_BUTTON_GHOST))
+                a->show_schedule = false;
+            if (cui_button(ui, "Schedule", .variant = CUI_BUTTON_PRIMARY,
+                           .disabled = !valid)) {
+                if (a->sched_count >= GREED_MAX_SCHEDULED) {
+                    set_status(a, "The schedule is full (%d entries)", GREED_MAX_SCHEDULED);
+                } else {
+                    GreedScheduled *s = &a->sched[a->sched_count++];
+                    snprintf(s->url, sizeof s->url, "%s", a->sched_url);
+                    snprintf(s->dir, sizeof s->dir, "%s", a->cfg.download_dir);
+                    s->due = (long long)due;
+                    config_schedules_save(a->sched, a->sched_count);
+                    a->show_schedule = false;
+                    a->view = VIEW_SCHEDULED;
+                    set_status(a, "Scheduled for %s", when);
+                }
             }
         }
     }
@@ -1728,7 +2025,7 @@ static void handle_keys(App *a, cui_ctx *ui) {
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_B)) a->sidebar_open = !a->sidebar_open;
     if (!cui_wants_keyboard(ui) && cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_A)) select_all(a);
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_F)) {
-        a->show_stats = false;
+        a->view = VIEW_DOWNLOADS;
         a->focus_search = true;
     }
     if (cui_wants_keyboard(ui)) return;
@@ -1760,6 +2057,7 @@ static void frame(cui_ctx *ui, void *user) {
         sample_speed(a);
     }
     checksum_tick(a);
+    schedule_tick(a);
     /* Screenshot/test hook: GREED_DEMO=details selects the first download. */
     if (a->demo_details && !a->selected[0] && a->count)
         snprintf(a->selected, sizeof a->selected, "%s", a->items[0].gid);
@@ -1795,6 +2093,7 @@ static void frame(cui_ctx *ui, void *user) {
     }
 
     add_dialog(a, ui);
+    schedule_dialog(a, ui);
     settings_dialog(a, ui);
     info_dialog(a, ui);
 }
@@ -1814,6 +2113,7 @@ int ui_run(void) {
     snprintf(a->add_dir, sizeof a->add_dir, "%s", cfg.download_dir);
     snprintf(a->status, sizeof a->status, "Ready");
     rpc_init(&a->rpc, cfg.rpc_port);
+    a->sched_count = config_schedules_load(a->sched, GREED_MAX_SCHEDULED);
 
     /* Test hook for screenshots: GREED_DEMO=add|settings|settings-bandwidth|settings-torrents|details|stats|empty */
     const char *demo = getenv("GREED_DEMO");
@@ -1829,8 +2129,12 @@ int ui_run(void) {
         open_settings(a);
         a->settings_tab = 3;
     } else if (demo && !strcmp(demo, "details")) a->demo_details = true;
-    else if (demo && !strcmp(demo, "stats")) a->show_stats = true;
-    else if (demo && !strcmp(demo, "empty")) snprintf(a->filter, sizeof a->filter, "zzzz");
+    else if (demo && !strcmp(demo, "stats")) a->view = VIEW_STATS;
+    else if (demo && !strcmp(demo, "scheduled")) a->view = VIEW_SCHEDULED;
+    else if (demo && !strcmp(demo, "scheduled-add")) {
+        a->view = VIEW_SCHEDULED;
+        open_schedule(a);
+    } else if (demo && !strcmp(demo, "empty")) snprintf(a->filter, sizeof a->filter, "zzzz");
 
     int rc = cui_app_run(&(cui_app_desc){.title = "Greed",
                                          .width = 1240,
