@@ -73721,6 +73721,12 @@ typedef struct {
     XSyncCounter sync_counter;
     bool sync_pending;
     uint64_t sync_value;
+    /* Greed patch: a live resize swaps without vsync, so the counter is acked in one
+     * frame instead of waiting for the next refresh; vsync returns when it ends. */
+    PFN_glXSwapIntervalEXT SwapIntervalEXT;
+    PFN_glXSwapIntervalMESA SwapIntervalMESA;
+    bool resize_vsync_off;
+    double last_sync_request;
     Cursor cursors[CUI_CURSOR_COUNT];
     cui_cursor current_cursor;
     int width, height;     /* pixels */
@@ -73760,6 +73766,11 @@ static void cui__x11_sync_ack(cui_app *app) {
                      (int)(x->sync_value >> 32));
     XSyncSetCounter(x->dpy, x->sync_counter, v);
     x->sync_pending = false;
+}
+
+static void cui__x11_swap_interval(cui__x11 *x, int interval) {
+    if (x->SwapIntervalEXT) x->SwapIntervalEXT(x->dpy, x->win, interval);
+    else if (x->SwapIntervalMESA) x->SwapIntervalMESA((unsigned)interval);
 }
 
 double cui__plat_now(void) {
@@ -73988,6 +73999,8 @@ bool cui__plat_gl_create(cui_app *app, bool vsync) {
     if (!x->MakeCurrent(x->dpy, x->win, x->ctx)) { x->DestroyContext(x->dpy, x->ctx); x->ctx = NULL; return false; }
     PFN_glXSwapIntervalEXT sie = (PFN_glXSwapIntervalEXT)x->GetProcAddress((const unsigned char *)"glXSwapIntervalEXT");
     PFN_glXSwapIntervalMESA sim = (PFN_glXSwapIntervalMESA)x->GetProcAddress((const unsigned char *)"glXSwapIntervalMESA");
+    x->SwapIntervalEXT = sie;
+    x->SwapIntervalMESA = sim;
     if (sie) sie(x->dpy, x->win, vsync ? 1 : 0);
     else if (sim) sim(vsync ? 1 : 0);
     PFN_glXQueryExtensionsString qes = (PFN_glXQueryExtensionsString)dlsym(x->libgl, "glXQueryExtensionsString");
@@ -74019,6 +74032,13 @@ void cui__plat_gl_release(cui_app *app) {
 
 void cui__plat_gl_swap(cui_app *app) {
     cui__x11 *x = cui__x(app);
+    if (x->resize_vsync_off && cui__plat_now() - x->last_sync_request > 0.25) {
+        x->resize_vsync_off = false;
+        cui__x11_swap_interval(x, app->desc.no_vsync ? 0 : 1);
+        app->vsync_off = false;
+        app->pace_frames = 0;
+        app->pace_fast = 0;
+    }
     if (x->ctx) x->SwapBuffers(x->dpy, x->win);
 }
 
@@ -74307,6 +74327,11 @@ static void cui__x11_event(cui_app *app, XEvent *ev) {
             x->sync_value = (uint64_t)(uint32_t)ev->xclient.data.l[2] |
                             ((uint64_t)(uint32_t)ev->xclient.data.l[3] << 32);
             x->sync_pending = true;
+            x->last_sync_request = cui__plat_now();
+            if (!x->resize_vsync_off) {
+                x->resize_vsync_off = true;
+                cui__x11_swap_interval(x, 0);
+            }
             break;
         }
         if ((Atom)ev->xclient.data.l[0] == x->wm_delete) app->running = false;
