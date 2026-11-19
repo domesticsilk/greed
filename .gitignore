@@ -1,3 +1,6 @@
+# Build
+/build/
+
 # Rust
 /target/
 **/*.rs.bk
