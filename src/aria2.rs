@@ -1,5 +1,6 @@
 //! aria2 JSON-RPC client.
 
+use base64::Engine;
 use serde_json::{Value, json};
 use std::process::{Child, Command};
 
@@ -62,6 +63,13 @@ impl Client {
         Ok(r.as_str().unwrap_or("").to_string())
     }
 
+    pub fn add_torrent(&self, path: &str, opts: &Value) -> Result<String, String> {
+        let data = std::fs::read(path).map_err(|e| e.to_string())?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+        let r = self.call("aria2.addTorrent", vec![json!(b64), json!([]), opts.clone()])?;
+        Ok(r.as_str().unwrap_or("").to_string())
+    }
+
     pub fn tell_status(&self, gid: &str) -> Result<Value, String> {
         self.call("aria2.tellStatus", vec![json!(gid)])
     }
@@ -99,8 +107,64 @@ impl Client {
     }
 }
 
+pub fn bundled_binary() -> Option<std::path::PathBuf> {
+    // 1. adjacent to executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("aria2c");
+            if p.exists() {
+                return Some(p);
+            }
+            let p = dir.join("vendor").join("aria2").join("aria2c");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    // 2. dev tree
+    let p = std::path::PathBuf::from("vendor/aria2/aria2c");
+    if p.exists() {
+        return Some(p);
+    }
+    None
+}
+
+pub fn aria2_binary() -> String {
+    let system = Command::new("aria2c")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if system {
+        "aria2c".to_string()
+    } else if let Some(p) = bundled_binary() {
+        p.to_string_lossy().to_string()
+    } else {
+        "aria2c".to_string()
+    }
+}
+
+pub fn lib_dir_for(bin: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(bin);
+    if p.is_absolute() || bin.contains('/') {
+        // bundled: lib next to binary or in ../lib
+        if let Some(dir) = p.parent() {
+            let l = dir.join("lib");
+            if l.exists() {
+                return Some(l);
+            }
+            let l = dir.join("vendor").join("aria2").join("lib");
+            if l.exists() {
+                return Some(l);
+            }
+        }
+    }
+    None
+}
+
 pub fn spawn(port: u16, secret: Option<&str>, daemon: bool) -> Result<Child, String> {
-    let mut cmd = Command::new("aria2c");
+    let bin = aria2_binary();
+    let mut cmd = Command::new(&bin);
     cmd.arg("--enable-rpc")
         .arg(format!("--rpc-listen-port={}", port))
         .arg("--rpc-listen-all=false");
@@ -112,14 +176,38 @@ pub fn spawn(port: u16, secret: Option<&str>, daemon: bool) -> Result<Child, Str
     } else {
         cmd.arg("--daemon=false");
     }
+    if let Some(ld) = lib_dir_for(&bin) {
+        let existing = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+        let newv = if existing.is_empty() {
+            ld.to_string_lossy().to_string()
+        } else {
+            format!("{}:{}", ld.to_string_lossy(), existing)
+        };
+        cmd.env("LD_LIBRARY_PATH", newv);
+    }
     cmd.arg("--quiet");
     cmd.spawn().map_err(|e| e.to_string())
 }
 
 pub fn aria2_available() -> bool {
-    Command::new("aria2c")
+    if Command::new("aria2c")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+    {
+        return true;
+    }
+    if let Some(p) = bundled_binary() {
+        return Command::new(&p)
+            .arg("--version")
+            .env(
+                "LD_LIBRARY_PATH",
+                p.parent().unwrap().join("lib").to_string_lossy().to_string(),
+            )
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+    }
+    false
 }

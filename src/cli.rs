@@ -27,7 +27,11 @@ pub fn run(cmd: &str, mut args: Arguments) -> Result<(), String> {
                 opts["max-connection-per-server"] = json!(c);
             }
             for u in urls {
-                let gid = client.add_uri(&[u.clone()], &opts)?;
+                let gid = if u.ends_with(".torrent") || std::path::Path::new(&u).is_file() {
+                    client.add_torrent(&u, &opts)?
+                } else {
+                    client.add_uri(&[u.clone()], &opts)?
+                };
                 println!("Added: {} ({})", gid, u);
             }
             Ok(())

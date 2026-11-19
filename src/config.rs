@@ -18,7 +18,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            download_dir: "~/Downloads".to_string(),
+            download_dir: expand_tilde("~/Downloads"),
             max_concurrent: 5,
             rpc_port: 6800,
             aria2_path: "aria2c".to_string(),
@@ -37,11 +37,14 @@ impl Config {
     pub fn load() -> Self {
         let p = Self::path();
         if let Ok(s) = fs::read_to_string(&p) {
-            if let Ok(c) = serde_json::from_str(&s) {
+            if let Ok(mut c) = serde_json::from_str::<Config>(&s) {
+                c.download_dir = expand_tilde(&c.download_dir);
                 return c;
             }
         }
-        Self::default()
+        let mut c = Self::default();
+        c.download_dir = expand_tilde(&c.download_dir);
+        c
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -52,6 +55,19 @@ impl Config {
         let s = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         fs::write(&p, s).map_err(|e| e.to_string())
     }
+}
+
+fn expand_tilde(p: &str) -> String {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest).to_string_lossy().to_string();
+        }
+    } else if p == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return home.to_string_lossy().to_string();
+        }
+    }
+    p.to_string()
 }
 
 fn dirs_path() -> PathBuf {

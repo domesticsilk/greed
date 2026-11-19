@@ -6,7 +6,7 @@ use crate::model::{Download, GlobalStat};
 use crate::theme;
 use eframe::egui;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub struct GreedApp {
     pub client: Client,
@@ -21,7 +21,6 @@ pub struct GreedApp {
     pub rx: mpsc::Receiver<(Vec<Download>, GlobalStat)>,
     pub clipboard_rx: mpsc::Receiver<String>,
     pub pending_clipboard: Option<String>,
-    pub last_poll: Instant,
 }
 
 impl GreedApp {
@@ -45,7 +44,6 @@ impl GreedApp {
         }
 
         let (tx, rx) = mpsc::channel();
-        let (ctx, _) = (client.clone(), ());
         let c = client.clone();
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(1));
@@ -111,7 +109,6 @@ impl GreedApp {
             rx,
             clipboard_rx: cb_rx,
             pending_clipboard: None,
-            last_poll: Instant::now(),
         }
     }
 }
@@ -245,7 +242,12 @@ impl eframe::App for GreedApp {
                     ui.horizontal(|ui| {
                         if ui.button("Add").clicked() {
                             let opts = serde_json::json!({"dir": self.config.download_dir});
-                            match self.client.add_uri(&[self.add_url.clone()], &opts) {
+                            let res = if self.add_url.ends_with(".torrent") {
+                                self.client.add_torrent(&self.add_url, &opts)
+                            } else {
+                                self.client.add_uri(&[self.add_url.clone()], &opts)
+                            };
+                            match res {
                                 Ok(gid) => self.status_msg = format!("Added {}", gid),
                                 Err(e) => self.status_msg = format!("Error: {}", e),
                             }
@@ -261,8 +263,7 @@ impl eframe::App for GreedApp {
                                 .pick_file()
                             {
                                 let opts = serde_json::json!({"dir": self.config.download_dir});
-                                let urls = vec![path.to_string_lossy().to_string()];
-                                match self.client.add_uri(&urls, &opts) {
+                                match self.client.add_torrent(&path.to_string_lossy(), &opts) {
                                     Ok(gid) => self.status_msg = format!("Added {}", gid),
                                     Err(e) => self.status_msg = format!("Error: {}", e),
                                 }

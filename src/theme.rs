@@ -37,7 +37,7 @@ pub fn apply(ctx: &eframe::egui::Context) {
     v.error_fg_color = ERROR;
     ctx.set_visuals(v);
 
-    let mut fonts = eframe::egui::FontDefinitions::default();
+    let fonts = eframe::egui::FontDefinitions::default();
     // Use default fonts; no custom embed to keep binary small.
     ctx.set_fonts(fonts);
 }
