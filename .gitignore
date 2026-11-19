@@ -24,3 +24,7 @@ Thumbs.db
 *.pkg.tar.zst
 *.tar.gz
 vendor/
+
+# Spec-kit / OpenCode tooling
+.specify/
+.opencode/
