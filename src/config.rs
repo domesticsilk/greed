@@ -5,11 +5,11 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub download_dir: String,
     pub max_concurrent: u32,
     pub rpc_port: u16,
-    pub aria2_path: String,
     pub auto_start_aria2: bool,
     pub clipboard_monitor: bool,
     pub notify_on_complete: bool,
@@ -21,7 +21,6 @@ impl Default for Config {
             download_dir: expand_tilde("~/Downloads"),
             max_concurrent: 5,
             rpc_port: 6800,
-            aria2_path: "aria2c".to_string(),
             auto_start_aria2: true,
             clipboard_monitor: true,
             notify_on_complete: true,

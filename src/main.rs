@@ -7,7 +7,6 @@ mod config;
 mod model;
 mod theme;
 mod ui;
-mod worker;
 
 use pico_args::Arguments;
 
@@ -50,7 +49,13 @@ fn main() {
 }
 
 fn run_gui() {
-    let options = eframe::NativeOptions::default();
+    let options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_inner_size([1100.0, 700.0])
+            .with_min_inner_size([1000.0, 620.0])
+            .with_title("Greed"),
+        ..Default::default()
+    };
     if let Err(e) = eframe::run_native(
         "Greed",
         options,
@@ -62,7 +67,19 @@ fn run_gui() {
 
 fn print_help() {
     println!(
-        "greed {}\n\nUSAGE:\n  greed [COMMAND]\n\nCOMMANDS:\n  gui        Launch the GUI\n  version    Print version\n  help       Print this help\n",
-        VERSION
+        "greed {VERSION}\n\n\
+USAGE:\n  greed [COMMAND] [OPTIONS]\n\n\
+COMMANDS:\n\
+  gui                          Launch the GUI (default when a display is present)\n\
+  add <URL|MAGNET|FILE>…       Add downloads (-d DIR, -o NAME, -x CONNECTIONS)\n\
+  list [--json]                List downloads\n\
+  status <GID> [--json]        Show one download\n\
+  pause <GID>…                 Pause downloads\n\
+  resume <GID>…                Resume downloads\n\
+  remove <GID>… [--delete]     Remove downloads\n\
+  stats                        Global transfer statistics\n\
+  shutdown                     Stop the aria2 engine\n\
+  version                      Print version\n\
+  help                         Print this help\n"
     );
 }

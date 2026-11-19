@@ -23,7 +23,6 @@ Thumbs.db
 *.rpm
 *.pkg.tar.zst
 *.tar.gz
-vendor/
 
 # Spec-kit / OpenCode tooling
 .specify/

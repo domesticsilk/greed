@@ -1,6 +1,6 @@
 # Greed
 
-A minimal, advanced download manager for Linux. GUI + CLI in a single Rust binary, powered by [aria2](https://aria2.github.io/).
+A dark download manager for Linux. GUI + CLI in a single Rust binary, powered by [aria2](https://aria2.github.io/).
 
 ![License: GPL-2.0](https://img.shields.io/badge/License-GPL--2.0-blue.svg)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
@@ -8,68 +8,75 @@ A minimal, advanced download manager for Linux. GUI + CLI in a single Rust binar
 
 ## Features
 
-- **aria2 core** — HTTP/HTTPS/FTP/BitTorrent/Metalink, resume, multi-connection, checksums
-- **GUI (egui)** — dark Echidna theme (Re:Zero), tabs (Active/Waiting/Stopped/Complete), compact list with progress/speed/ETA, command palette
-- **CLI** — `greed add/list/status/pause/resume/remove/stats/shutdown/version` with `--json`
-- **Accurate statistics** — global and per-download speed, size, ETA, peers/seeders
-- **Clipboard monitoring** — popup on copied URL (toggleable)
-- **Torrent support** — magnet links and `.torrent` files
-- **Keyboard-first** — shortcuts + command palette (Ctrl+Shift+P)
-- **Maia-inspired** — config JSON, crash log, `--install`/`--uninstall`, first-run tour
+- **aria2 core** — HTTP/HTTPS/FTP, BitTorrent, Metalink; resume, multi-connection, checksums
+- **Bundled aria2** — `vendor/aria2/` ships with the repo; falls back to a system `aria2c`
+- **GUI (egui)** — dark Witch's Ink theme, sidebar tabs (All/Active/Waiting/Stopped/Complete), searchable table with progress, speed, ETA and status, details panel per download
+- **CLI** — `greed add/list/status/pause/resume/remove/stats/shutdown` with `--json` for `list` and `status`
+- **Torrents** — magnet links and `.torrent` files
+- **Clipboard monitoring** — offers to download a copied link (toggleable)
+- **Notifications** — desktop notification when a download completes (toggleable)
+- **Live stats** — global and per-download speed, size, ETA, connections, seeders
 
 ## Requirements
 
 - Linux (X11 or Wayland via XWayland)
 - OpenGL
-- `aria2` installed (`sudo pacman -S aria2` / `sudo apt install aria2`)
 - Rust 1.88+ (to build)
 
-## Install
+aria2 is bundled, so nothing else is needed. A system `aria2c` is only used when the bundled one is missing.
 
-### From release
-Download the latest release binary and run:
+## Build
 
 ```sh
-./greed --install
-```
-
-This places `greed` in `~/.local/bin` and adds a launcher entry.
-
-### Build from source
-```sh
-git clone https://github.com/thefool/greed.git
+git clone https://github.com/domesticsilk/greed.git
 cd greed
 cargo build --release
-./target/release/greed --install
+./target/release/greed
 ```
 
-Release profile uses `opt-level="z"`, fat LTO, strip, `panic=abort` for a minimal binary.
+Release profile uses `opt-level="z"`, fat LTO, strip and `panic=abort` for a small binary.
 
 ## Usage
 
 ### GUI
+
 ```sh
-greed            # opens GUI if DISPLAY is set
-greed gui        # force GUI
+greed            # opens the GUI if DISPLAY or WAYLAND_DISPLAY is set
+greed gui        # force the GUI
 ```
 
+Shortcuts: `Ctrl+N` add, `Ctrl+F` search, `Space` pause/resume, `Delete` remove, `Esc` clear selection. Double-click a row to open its folder.
+
 ### CLI
+
 ```sh
 greed add https://example.com/file.zip -d ~/Downloads -x 8
+greed add magnet:?xt=urn:btih:…
 greed list
+greed list --json
 greed status <GID>
 greed pause <GID>
 greed resume <GID>
-greed remove <GID> --delete
+greed remove <GID>          # keep the download result entry
+greed remove <GID> --delete # remove it from aria2 entirely
 greed stats
 greed shutdown
 ```
 
-Add `--json` to `list`/`status` for machine-readable output.
+The CLI starts aria2 automatically when it is not already running.
 
 ## Configuration
 
-Settings live in `~/.config/greed/config.json`. Crash log: `~/.local/state/greed/crash.log`.
+Settings live in `~/.config/greed/config.json` and are also editable in the GUI (Settings):
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `download_dir` | `~/Downloads` | Default save location |
+| `max_concurrent` | `5` | Max simultaneous downloads |
+| `rpc_port` | `6800` | aria2 JSON-RPC port (takes effect after restart) |
+| `auto_start_aria2` | `true` | Start the engine on launch |
+| `clipboard_monitor` | `true` | Offer copied links |
+| `notify_on_complete` | `true` | Desktop notification on completion |
 
 ## License
 

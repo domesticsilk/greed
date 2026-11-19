@@ -2,7 +2,7 @@
 
 use crate::aria2::{self, Client};
 use crate::config::Config;
-use crate::model::{Download, GlobalStat};
+use crate::model::{fmt_bytes, fmt_speed, Download, GlobalStat};
 use pico_args::Arguments;
 use serde_json::json;
 
@@ -27,7 +27,7 @@ pub fn run(cmd: &str, mut args: Arguments) -> Result<(), String> {
                 opts["max-connection-per-server"] = json!(c);
             }
             for u in urls {
-                let gid = if u.ends_with(".torrent") || std::path::Path::new(&u).is_file() {
+                let gid = if u.ends_with(".torrent") && std::path::Path::new(&u).is_file() {
                     client.add_torrent(&u, &opts)?
                 } else {
                     client.add_uri(&[u.clone()], &opts)?
@@ -59,7 +59,7 @@ pub fn run(cmd: &str, mut args: Arguments) -> Result<(), String> {
             } else {
                 println!("{:<14} {:<10} {:>7} {:>10} {}", "GID", "STATUS", "PROG", "SPEED", "NAME");
                 for d in &all {
-                    let name = d.files.first().cloned().unwrap_or_else(|| d.gid.clone());
+                    let name = d.name.clone();
                     println!(
                         "{:<14} {:<10} {:>6.1}% {:>10} {}",
                         &d.gid[..d.gid.len().min(14)],
@@ -117,6 +117,8 @@ pub fn run(cmd: &str, mut args: Arguments) -> Result<(), String> {
             for g in gids {
                 if delete {
                     client.force_remove(&g)?;
+                    // forceRemove leaves a "removed" result behind, which aria2 saves into the session.
+                    let _ = client.remove_result(&g);
                 } else {
                     client.remove(&g)?;
                 }
@@ -147,7 +149,12 @@ fn ensure_client(config: &Config) -> Result<Client, String> {
         return Ok(client);
     }
     if aria2::aria2_available() && config.auto_start_aria2 {
-        let _ = aria2::spawn(config.rpc_port, None, true);
+        let _ = aria2::spawn(
+            config.rpc_port,
+            None,
+            &config.download_dir,
+            config.max_concurrent,
+        );
         for _ in 0..20 {
             std::thread::sleep(std::time::Duration::from_millis(100));
             if client.probe() {
@@ -156,28 +163,4 @@ fn ensure_client(config: &Config) -> Result<Client, String> {
         }
     }
     Err("aria2 RPC not available. Start aria2c --enable-rpc or install aria2.".to_string())
-}
-
-fn fmt_speed(b: u64) -> String {
-    if b >= 1_073_741_824 {
-        format!("{:.2} GB/s", b as f64 / 1_073_741_824.0)
-    } else if b >= 1_048_576 {
-        format!("{:.2} MB/s", b as f64 / 1_048_576.0)
-    } else if b >= 1024 {
-        format!("{:.2} KB/s", b as f64 / 1024.0)
-    } else {
-        format!("{} B/s", b)
-    }
-}
-
-fn fmt_bytes(b: u64) -> String {
-    if b >= 1_073_741_824 {
-        format!("{:.2} GB", b as f64 / 1_073_741_824.0)
-    } else if b >= 1_048_576 {
-        format!("{:.2} MB", b as f64 / 1_048_576.0)
-    } else if b >= 1024 {
-        format!("{:.2} KB", b as f64 / 1024.0)
-    } else {
-        format!("{} B", b)
-    }
 }

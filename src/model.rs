@@ -1,8 +1,10 @@
-//! Data models.
+//! Data models parsed from aria2 JSON-RPC, plus shared formatting helpers.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use serde_json::Value;
+use std::path::Path;
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Download {
     pub gid: String,
     pub status: String,
@@ -13,40 +15,84 @@ pub struct Download {
     pub connections: u32,
     pub num_seeders: u32,
     pub dir: String,
-    pub files: Vec<String>,
-    pub error_code: String,
+    pub name: String,
+    pub url: String,
+    pub info_hash: String,
     pub error_message: String,
+    pub file_count: usize,
+    pub is_torrent: bool,
 }
 
 impl Download {
-    pub fn from_value(v: &serde_json::Value) -> Self {
-        let g = |k: &str| v.get(k).cloned().unwrap_or(serde_json::Value::Null);
-        let files = v
-            .get("files")
-            .and_then(|f| f.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|f| {
-                        f.get("path")
-                            .and_then(|p| p.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+    pub fn from_value(v: &Value) -> Self {
+        let text = |key: &str| {
+            v.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        let number = |key: &str| {
+            v.get(key)
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)
+        };
+
+        let files = v.get("files").and_then(Value::as_array);
+        let file_count = files.map(Vec::len).unwrap_or(0);
+        let path = files
+            .and_then(|f| f.first())
+            .and_then(|f| f.get("path"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let url = files
+            .and_then(|f| f.first())
+            .and_then(|f| f.get("uris"))
+            .and_then(Value::as_array)
+            .and_then(|u| u.first())
+            .and_then(|u| u.get("uri"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let bt_name = v
+            .pointer("/bittorrent/info/name")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+
+        let gid = text("gid");
+        let info_hash = text("infoHash");
+        let is_torrent = v.get("bittorrent").is_some() || !info_hash.is_empty();
+
+        let name = if !bt_name.is_empty() {
+            bt_name.to_string()
+        } else if !path.is_empty() {
+            Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string())
+        } else if is_torrent && !info_hash.is_empty() {
+            format!("Magnet {}", &info_hash[..info_hash.len().min(8)])
+        } else if !url.is_empty() {
+            url.to_string()
+        } else {
+            gid.clone()
+        };
+
         Self {
-            gid: g("gid").as_str().unwrap_or("").to_string(),
-            status: g("status").as_str().unwrap_or("").to_string(),
-            total_length: g("totalLength").as_str().unwrap_or("0").parse().unwrap_or(0),
-            completed_length: g("completedLength").as_str().unwrap_or("0").parse().unwrap_or(0),
-            download_speed: g("downloadSpeed").as_str().unwrap_or("0").parse().unwrap_or(0),
-            upload_speed: g("uploadSpeed").as_str().unwrap_or("0").parse().unwrap_or(0),
-            connections: g("connections").as_str().unwrap_or("0").parse().unwrap_or(0),
-            num_seeders: g("numSeeders").as_str().unwrap_or("0").parse().unwrap_or(0),
-            dir: g("dir").as_str().unwrap_or("").to_string(),
-            files,
-            error_code: g("errorCode").as_str().unwrap_or("").to_string(),
-            error_message: g("errorMessage").as_str().unwrap_or("").to_string(),
+            gid,
+            status: text("status"),
+            total_length: number("totalLength"),
+            completed_length: number("completedLength"),
+            download_speed: number("downloadSpeed"),
+            upload_speed: number("uploadSpeed"),
+            connections: number("connections") as u32,
+            num_seeders: number("numSeeders") as u32,
+            dir: text("dir"),
+            name,
+            url: url.to_string(),
+            info_hash,
+            error_message: text("errorMessage"),
+            file_count,
+            is_torrent,
         }
     }
 
@@ -54,8 +100,33 @@ impl Download {
         if self.total_length == 0 {
             0.0
         } else {
-            self.completed_length as f32 / self.total_length as f32
+            (self.completed_length as f64 / self.total_length as f64) as f32
         }
+    }
+
+    pub fn eta_secs(&self) -> Option<u64> {
+        if self.download_speed > 0 && self.total_length > self.completed_length {
+            Some((self.total_length - self.completed_length) / self.download_speed)
+        } else {
+            None
+        }
+    }
+
+    pub fn status_label(&self) -> &'static str {
+        match self.status.as_str() {
+            "active" if self.is_torrent && self.total_length == 0 => "Fetching metadata",
+            "active" => "Downloading",
+            "waiting" => "Queued",
+            "paused" => "Paused",
+            "complete" => "Completed",
+            "error" => "Failed",
+            "removed" => "Removed",
+            _ => "Unknown",
+        }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        matches!(self.status.as_str(), "complete" | "error" | "removed")
     }
 }
 
@@ -69,14 +140,55 @@ pub struct GlobalStat {
 }
 
 impl GlobalStat {
-    pub fn from_value(v: &serde_json::Value) -> Self {
-        let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("0");
+    pub fn from_value(v: &Value) -> Self {
+        let number = |key: &str| {
+            v.get(key)
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)
+        };
         Self {
-            download_speed: g("downloadSpeed").parse().unwrap_or(0),
-            upload_speed: g("uploadSpeed").parse().unwrap_or(0),
-            num_active: g("numActive").parse().unwrap_or(0),
-            num_waiting: g("numWaiting").parse().unwrap_or(0),
-            num_stopped: g("numStopped").parse().unwrap_or(0),
+            download_speed: number("downloadSpeed"),
+            upload_speed: number("uploadSpeed"),
+            num_active: number("numActive"),
+            num_waiting: number("numWaiting"),
+            num_stopped: number("numStopped"),
         }
+    }
+}
+
+pub fn fmt_speed(b: u64) -> String {
+    if b >= 1_073_741_824 {
+        format!("{:.2} GB/s", b as f64 / 1_073_741_824.0)
+    } else if b >= 1_048_576 {
+        format!("{:.2} MB/s", b as f64 / 1_048_576.0)
+    } else if b >= 1024 {
+        format!("{:.1} KB/s", b as f64 / 1024.0)
+    } else {
+        format!("{b} B/s")
+    }
+}
+
+pub fn fmt_bytes(b: u64) -> String {
+    if b >= 1_073_741_824 {
+        format!("{:.2} GB", b as f64 / 1_073_741_824.0)
+    } else if b >= 1_048_576 {
+        format!("{:.1} MB", b as f64 / 1_048_576.0)
+    } else if b >= 1024 {
+        format!("{:.1} KB", b as f64 / 1024.0)
+    } else {
+        format!("{b} B")
+    }
+}
+
+pub fn fmt_eta(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    } else if secs < 86400 {
+        format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
     }
 }
