@@ -1,6 +1,7 @@
 #include "ui.h"
 
 #include "config.h"
+#include "logo.h"
 #include "model.h"
 #include "rpc.h"
 #include "x11.h"
@@ -12,14 +13,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 enum { TAB_ALL, TAB_ACTIVE, TAB_WAITING, TAB_STOPPED, TAB_COMPLETE, TAB_COUNT };
+enum { HIST = 72 };
 
 typedef struct {
     char gid[32];
     char status[24];
+    bool checked;
 } Known;
 
 typedef struct {
@@ -31,12 +35,16 @@ typedef struct {
     int cap;
     GlobalStat gs;
     bool connected;
+    bool engine_applied;
     int tab;
+    bool show_stats;
     char filter[128];
     bool focus_search;
     char selected[32];
     bool show_add;
     bool show_settings;
+    int settings_tab;
+    int settings_seen_tab;
     char add_urls[16384];
     char add_dir[1024];
     char add_name[256];
@@ -54,6 +62,11 @@ typedef struct {
     GreedFrame frame;
     bool frame_ready;
     bool demo_details;
+    float hist_down[HIST];
+    float hist_up[HIST];
+    char hist_text[HIST][16];
+    const char *hist_labels[HIST];
+    int hist_count;
 } App;
 
 static const char *tab_names[TAB_COUNT] = {"All", "Active", "Waiting", "Stopped", "Complete"};
@@ -83,25 +96,33 @@ static void apply_theme(cui_ctx *ui) {
     t->colors[CUI_TOKEN_ACCENT_STRONG] = CUI_RGB(0xcbaeb9);
     t->colors[CUI_TOKEN_ACCENT_SUBTLE] = CUI_RGB(0x2a2d34);
     t->colors[CUI_TOKEN_ACCENT_FOREGROUND] = CUI_RGB(0x121419);
-    t->colors[CUI_TOKEN_SUCCESS] = CUI_RGB(0xb49a70);
+    t->colors[CUI_TOKEN_SUCCESS] = CUI_RGB(0x8fa99a);
     t->colors[CUI_TOKEN_WARNING] = CUI_RGB(0xb49a70);
     t->colors[CUI_TOKEN_DANGER] = CUI_RGB(0xf87171);
     t->colors[CUI_TOKEN_INFO] = CUI_RGB(0x95849b);
     t->colors[CUI_TOKEN_HOVER] = CUI_RGB(0x1d2026);
     t->colors[CUI_TOKEN_ACTIVE] = CUI_RGB(0x2a2d34);
     t->colors[CUI_TOKEN_FOCUS_RING] = CUI_RGB(0xcbaeb9);
+    t->colors[CUI_TOKEN_SERIES_1] = CUI_RGB(0xcbaeb9);
+    t->colors[CUI_TOKEN_SERIES_2] = CUI_RGB(0x9a9fa4);
+    t->colors[CUI_TOKEN_SERIES_3] = CUI_RGB(0x7d7977);
+    t->colors[CUI_TOKEN_SERIES_4] = CUI_RGB(0x8fa99a);
+    t->colors[CUI_TOKEN_SERIES_5] = CUI_RGB(0xf87171);
+    t->colors[CUI_TOKEN_SERIES_6] = CUI_RGB(0xb49a70);
 }
 
 static cui_color status_color(const Download *d) {
     if (!strcmp(d->status, "active")) return CUI_COLOR_ACCENT_STRONG;
-    if (!strcmp(d->status, "paused") || !strcmp(d->status, "complete")) return CUI_COLOR_WARNING;
+    if (!strcmp(d->status, "complete")) return CUI_COLOR_SUCCESS;
+    if (!strcmp(d->status, "paused")) return CUI_COLOR_WARNING;
     if (!strcmp(d->status, "error")) return CUI_COLOR_DANGER;
     return CUI_COLOR_TEXT_MUTED;
 }
 
 static cui_tone status_tone(const Download *d) {
     if (!strcmp(d->status, "active")) return CUI_TONE_ACCENT;
-    if (!strcmp(d->status, "paused") || !strcmp(d->status, "complete")) return CUI_TONE_WARNING;
+    if (!strcmp(d->status, "complete")) return CUI_TONE_SUCCESS;
+    if (!strcmp(d->status, "paused")) return CUI_TONE_WARNING;
     if (!strcmp(d->status, "error")) return CUI_TONE_DANGER;
     return CUI_TONE_NEUTRAL;
 }
@@ -126,10 +147,11 @@ static void remember_statuses(App *a, const Download *items, int n, bool notify)
     for (int i = 0; i < n; i++) {
         snprintf(next[i].gid, sizeof next[i].gid, "%s", items[i].gid);
         snprintf(next[i].status, sizeof next[i].status, "%s", items[i].status);
-        if (!notify || !a->cfg.notify_on_complete) continue;
         for (int k = 0; k < a->known_count; k++) {
             if (strcmp(a->known[k].gid, items[i].gid)) continue;
-            if (!strcmp(items[i].status, "complete") && strcmp(a->known[k].status, "complete"))
+            next[i].checked = a->known[k].checked;
+            if (notify && a->cfg.notify_on_complete && !strcmp(items[i].status, "complete") &&
+                strcmp(a->known[k].status, "complete"))
                 notify_send(items[i].name);
             break;
         }
@@ -175,6 +197,7 @@ static void poll_engine(App *a) {
     if (!ok) {
         free(fresh);
         a->connected = false;
+        memset(&a->gs, 0, sizeof a->gs);
         return;
     }
     a->connected = true;
@@ -197,6 +220,29 @@ static void poll_engine(App *a) {
         }
         json_object_put(st);
     }
+}
+
+static void sample_speed(App *a) {
+    if (a->hist_count < HIST) a->hist_count++;
+    else {
+        memmove(a->hist_down, a->hist_down + 1, sizeof(float) * (HIST - 1));
+        memmove(a->hist_up, a->hist_up + 1, sizeof(float) * (HIST - 1));
+    }
+    int last = a->hist_count - 1;
+    a->hist_down[last] = (float)(a->gs.down_speed / 1024.0);
+    a->hist_up[last] = (float)(a->gs.up_speed / 1024.0);
+    for (int i = 0; i < a->hist_count; i++) {
+        if (i == last) snprintf(a->hist_text[i], sizeof a->hist_text[i], "now");
+        else if ((last - i) % 12 == 0)
+            snprintf(a->hist_text[i], sizeof a->hist_text[i], "-%ds", (int)((last - i) * 0.8));
+        else a->hist_text[i][0] = 0;
+        a->hist_labels[i] = a->hist_text[i];
+    }
+}
+
+static void apply_engine_options(App *a) {
+    if (!a->connected) return;
+    if (aria2_apply_options(&a->rpc, &a->cfg)) a->engine_applied = true;
 }
 
 static bool looks_like_link(const char *s) {
@@ -303,12 +349,28 @@ static void open_add(App *a) {
 
 static void open_settings(App *a) {
     a->edit = a->cfg;
+    a->settings_tab = 0;
+    a->settings_seen_tab = -1;
     a->show_settings = true;
 }
 
-static void toggle_selected(App *a) {
-    Download *d = find_item(a, a->selected);
-    if (!d) return;
+static Known *known_find(App *a, const char *gid) {
+    for (int i = 0; i < a->known_count; i++)
+        if (!strcmp(a->known[i].gid, gid)) return &a->known[i];
+    return NULL;
+}
+
+static int checked_count(App *a) {
+    int n = 0;
+    for (int i = 0; i < a->known_count; i++) n += a->known[i].checked;
+    return n;
+}
+
+static void clear_checks(App *a) {
+    for (int i = 0; i < a->known_count; i++) a->known[i].checked = false;
+}
+
+static void toggle_download(App *a, Download *d) {
     bool paused = !strcmp(d->status, "paused");
     struct json_object *params = json_object_new_array();
     json_object_array_add(params, json_object_new_string(d->gid));
@@ -322,9 +384,27 @@ static void toggle_selected(App *a) {
     a->last_poll = 0;
 }
 
-static void remove_selected(App *a) {
+static void toggle_selected(App *a) {
     Download *d = find_item(a, a->selected);
-    if (!d) return;
+    if (d) toggle_download(a, d);
+}
+
+static void bulk_toggle(App *a, bool pause) {
+    int n = 0;
+    for (int i = 0; i < a->known_count; i++) {
+        if (!a->known[i].checked) continue;
+        Download *d = find_item(a, a->known[i].gid);
+        if (!d) continue;
+        bool can = pause ? (!strcmp(d->status, "active") || !strcmp(d->status, "waiting"))
+                         : !strcmp(d->status, "paused");
+        if (!can) continue;
+        toggle_download(a, d);
+        n++;
+    }
+    if (n) set_status(a, pause ? "Paused %d downloads" : "Resumed %d downloads", n);
+}
+
+static void remove_download(App *a, Download *d) {
     struct json_object *params = json_object_new_array();
     json_object_array_add(params, json_object_new_string(d->gid));
     struct json_object *v = rpc_call(&a->rpc, download_is_finished(d) ? "aria2.removeDownloadResult"
@@ -341,9 +421,27 @@ static void remove_selected(App *a) {
         struct json_object *r = rpc_call(&a->rpc, "aria2.removeDownloadResult", purge);
         if (r) json_object_put(r);
     }
-    a->selected[0] = 0;
     set_status(a, "Removed");
+    if (!strcmp(a->selected, d->gid)) a->selected[0] = 0;
     a->last_poll = 0;
+}
+
+static void remove_selected(App *a) {
+    Download *d = find_item(a, a->selected);
+    if (d) remove_download(a, d);
+}
+
+static void bulk_remove(App *a) {
+    int n = 0;
+    for (int i = 0; i < a->known_count; i++) {
+        if (!a->known[i].checked) continue;
+        Download *d = find_item(a, a->known[i].gid);
+        if (!d) continue;
+        remove_download(a, d);
+        n++;
+    }
+    if (n) set_status(a, "Removed %d downloads", n);
+    clear_checks(a);
 }
 
 static void start_engine(App *a) {
@@ -351,8 +449,10 @@ static void start_engine(App *a) {
         set_status(a, "aria2 binary not found");
         return;
     }
-    if (aria2_ensure_running(a->cfg.rpc_port, a->cfg.download_dir, a->cfg.max_concurrent, true)) {
+    if (aria2_ensure_running(&a->cfg, true)) {
         a->connected = true;
+        a->engine_applied = false;
+        apply_engine_options(a);
         set_status(a, "aria2 started");
         a->last_poll = 0;
     } else {
@@ -390,6 +490,21 @@ static int collect_rows(App *a, int *rows, int cap) {
     return n;
 }
 
+static cui_texture logo_texture(cui_ctx *ui) {
+    static cui_texture tex;
+    if (tex) return tex;
+    int n = GREED_LOGO_W * GREED_LOGO_H;
+    unsigned char *rgba = malloc((size_t)n * 4);
+    if (!rgba) return 0;
+    for (int i = 0; i < n; i++) {
+        rgba[i * 4 + 0] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
+        rgba[i * 4 + 3] = greed_logo_alpha[i];
+    }
+    tex = cui_image_create(ui, GREED_LOGO_W, GREED_LOGO_H, rgba);
+    free(rgba);
+    return tex;
+}
+
 static void titlebar(App *a, cui_ctx *ui) {
     char down[32], up[32];
     fmt_speed(down, sizeof down, a->gs.down_speed);
@@ -400,7 +515,12 @@ static void titlebar(App *a, cui_ctx *ui) {
         cui_row(ui, .id = "dragzone", .width = CUI_FILL, .height = CUI_FILL, .gap = 8,
                 .align = CUI_ALIGN_CENTER) {
             cui_icon(ui, CUI_ICON_DOWNLOAD, 18, CUI_COLOR_ACCENT_STRONG);
-            cui_text(ui, "Greed", .font = CUI_FONT_MEDIUM, .size = 15);
+            cui_texture logo = logo_texture(ui);
+            if (logo)
+                cui_image(ui, logo, .width = CUI_PX(GREED_LOGO_W / 2),
+                          .height = CUI_PX(GREED_LOGO_H / 2), .tint = CUI_COLOR_FOREGROUND);
+            else
+                cui_text(ui, "Greed", .font = CUI_FONT_MEDIUM, .size = 15);
             cui_gap(ui, 6);
             cui_icon(ui, CUI_ICON_ARROW_DOWN, 13, CUI_COLOR_ACCENT_STRONG);
             cui_text(ui, down, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY, .tabular = true);
@@ -453,6 +573,51 @@ static void frame_interactions(App *a, cui_ctx *ui) {
         frame_begin_move(&a->frame);
 }
 
+typedef struct {
+    const float *values;
+    int count;
+    cui_color color;
+} SparkData;
+
+/* Same Catmull-Rom curve as the statistics chart, small enough for the sidebar. */
+static void sidebar_spark_paint(cui_ctx *ui, cui_rect r, void *user) {
+    SparkData *d = user;
+    if (d->count < 2 || r.w < 4 || r.h < 4) return;
+    float lo = d->values[0], hi = d->values[0];
+    for (int i = 1; i < d->count; i++) {
+        if (d->values[i] < lo) lo = d->values[i];
+        if (d->values[i] > hi) hi = d->values[i];
+    }
+    if (hi - lo < 1e-6f) hi = lo + 1;
+
+    cui_vec2 in[HIST];
+    for (int i = 0; i < d->count; i++)
+        in[i] = (cui_vec2){r.x + 2 + (r.w - 4) * (float)i / (float)(d->count - 1),
+                           r.y + 3 + (r.h - 6) * (1 - (d->values[i] - lo) / (hi - lo))};
+
+    enum { SEG = 8 };
+    cui_vec2 out[HIST * SEG];
+    int k = 0;
+    for (int i = 0; i < d->count - 1; i++) {
+        cui_vec2 p0 = in[i > 0 ? i - 1 : i], p1 = in[i], p2 = in[i + 1],
+                  p3 = in[i + 2 < d->count ? i + 2 : i + 1];
+        for (int s = 0; s < SEG; s++) {
+            float t = (float)s / (float)SEG, t2 = t * t, t3 = t2 * t;
+            float m1 = (p2.y - p0.y) * 0.5f, m2 = (p3.y - p1.y) * 0.5f;
+            float dy = p2.y - p1.y;
+            if ((dy > 0 && m1 < 0) || (dy < 0 && m1 > 0)) m1 = 0;
+            if ((dy > 0 && m2 < 0) || (dy < 0 && m2 > 0)) m2 = 0;
+            float h00 = 2 * t3 - 3 * t2 + 1, h10 = t3 - 2 * t2 + t;
+            float h01 = -2 * t3 + 3 * t2, h11 = t3 - t2;
+            out[k++] = (cui_vec2){p1.x + (p2.x - p1.x) * t,
+                                  h00 * p1.y + h10 * m1 + h01 * p2.y + h11 * m2};
+        }
+    }
+    out[k++] = in[d->count - 1];
+    cui_draw_polyline(ui, out, k, 1.75f, d->color, false);
+    cui_draw_circle(ui, out[k - 1], 3, d->color);
+}
+
 static void sidebar(App *a, cui_ctx *ui) {
     int counts[TAB_COUNT] = {0};
     for (int i = 0; i < a->count; i++)
@@ -463,28 +628,34 @@ static void sidebar(App *a, cui_ctx *ui) {
                .gap = 2) {
         cui_nav_section(ui, "LIBRARY");
         for (int t = 0; t < TAB_COUNT; t++) {
-            char badge[16];
-            snprintf(badge, sizeof badge, "%d", counts[t]);
-            if (cui_nav_item(ui, tab_names[t], .icon = tab_icons[t], .badge = badge,
-                             .selected = a->tab == t, .group = "tabs"))
+            char badge[16] = {0};
+            if (counts[t] > 0) snprintf(badge, sizeof badge, "%d", counts[t]);
+            if (cui_nav_item(ui, tab_names[t], .icon = tab_icons[t],
+                             .badge = badge[0] ? badge : NULL,
+                             .selected = !a->show_stats && a->tab == t, .group = "tabs")) {
                 a->tab = t;
+                a->show_stats = false;
+            }
         }
         cui_box(ui, .height = CUI_PX(14)) {}
         cui_separator(ui);
+        cui_nav_section(ui, "INSIGHTS");
+        if (cui_nav_item(ui, "Statistics", .icon = CUI_ICON_CHART_LINE,
+                         .selected = a->show_stats, .group = "tabs"))
+            a->show_stats = true;
+        cui_box(ui, .height = CUI_PX(14)) {}
+        cui_separator(ui);
         cui_nav_section(ui, "TRANSFER");
-        char down[32], up[32];
-        fmt_speed(down, sizeof down, a->gs.down_speed);
-        fmt_speed(up, sizeof up, a->gs.up_speed);
-        cui_row(ui, .width = CUI_FILL) {
-            cui_text(ui, "Download", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
+        cui_row(ui, .width = CUI_FILL, .gap = 6, .align = CUI_ALIGN_CENTER) {
+            cui_box(ui, .width = CUI_PX(6), .height = CUI_PX(6), .radius = 3,
+                    .bg = CUI_COLOR_ACCENT_STRONG);
+            cui_text(ui, "Download", .size = 11, .color = CUI_COLOR_TEXT_SECONDARY);
             cui_spacer(ui);
-            cui_text(ui, down, .size = 12, .color = CUI_COLOR_ACCENT_STRONG, .tabular = true);
+            cui_text(ui, "1 min", .size = 10, .color = CUI_COLOR_TEXT_MUTED);
         }
-        cui_row(ui, .width = CUI_FILL) {
-            cui_text(ui, "Upload", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
-            cui_spacer(ui);
-            cui_text(ui, up, .size = 12, .color = CUI_COLOR_TEXT_MUTED, .tabular = true);
-        }
+        SparkData spark = {a->hist_down, a->hist_count, CUI_COLOR_ACCENT_STRONG};
+        cui_canvas(ui, "sidebar-spark", CUI_FILL, CUI_PX(32), sidebar_spark_paint, &spark,
+                   sizeof spark);
         char num[32];
         cui_row(ui, .width = CUI_FILL) {
             cui_text(ui, "Active", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
@@ -616,6 +787,7 @@ static void download_table(App *a, cui_ctx *ui) {
     }
 
     static const cui_table_column cols[] = {
+        {"", CUI_PX(28), CUI_TEXT_START, false},
         {"NAME", CUI_FILL, CUI_TEXT_START, false},
         {"SIZE", CUI_PX(80), CUI_TEXT_RIGHT, false},
         {"PROGRESS", CUI_PX(150), CUI_TEXT_START, false},
@@ -623,13 +795,32 @@ static void download_table(App *a, cui_ctx *ui) {
         {"ETA", CUI_PX(64), CUI_TEXT_RIGHT, false},
         {"STATUS", CUI_PX(104), CUI_TEXT_START, false},
     };
-    cui_table(ui, "downloads", cols, 6, .height = CUI_FILL, .striped = true, .compact = true,
+    cui_table(ui, "downloads", cols, 7, .height = CUI_FILL, .striped = true, .compact = true,
               .selectable = true) {
         for (int r = 0; r < n; r++) {
             Download *d = &a->items[rows[r]];
             bool selected = !strcmp(a->selected, d->gid);
             bool clicked = cui_table_row(ui, selected);
-            if (clicked) {
+            bool on_pick = false;
+            cui_rect pr = {0};
+            cui_vec2 m = {0};
+            cui_table_cell(ui); {
+                Known *k = known_find(a, d->gid);
+                if (k) {
+                    char pick[64];
+                    snprintf(pick, sizeof pick, "##pick-%s", d->gid);
+                    /* The table row owns the click, so the pick column is hit-tested here. */
+                    pr = cui_get_rect(ui, cui_make_id(ui, pick) ^ 0xC0EC0001u);
+                    cui_checkbox(ui, pick, &k->checked);
+                    m = cui_mouse_pos(ui);
+                    if (clicked && m.x >= pr.x && m.x <= pr.x + pr.w && m.y >= pr.y &&
+                        m.y <= pr.y + pr.h) {
+                        k->checked = !k->checked;
+                        on_pick = true;
+                    }
+                }
+            }
+            if (clicked && !on_pick) {
                 double now = cui_time(ui);
                 if (now - a->last_click < 0.35 && !strcmp(a->last_click_gid, d->gid)) {
                     cui_app_open_url(d->dir);
@@ -686,7 +877,112 @@ static void download_table(App *a, cui_ctx *ui) {
     }
 }
 
+static int count_status(const App *a, const char *status) {
+    int n = 0;
+    for (int i = 0; i < a->count; i++)
+        if (!strcmp(a->items[i].status, status)) n++;
+    return n;
+}
+
+static bool disk_usage(const char *path, double *used_gb, double *total_gb,
+                       unsigned long long *free_bytes) {
+    struct statvfs s;
+    if (statvfs(path, &s) != 0 || s.f_blocks == 0 || s.f_frsize == 0) return false;
+    unsigned long long total = (unsigned long long)s.f_blocks * s.f_frsize;
+    unsigned long long avail = (unsigned long long)s.f_bavail * s.f_frsize;
+    *total_gb = (double)total / (1024.0 * 1024.0 * 1024.0);
+    *used_gb = (double)(total - avail) / (1024.0 * 1024.0 * 1024.0);
+    *free_bytes = avail;
+    return true;
+}
+
+static void stats_page(App *a, cui_ctx *ui) {
+    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .pad = 14, .gap = 12) {
+        cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
+            cui_column(ui, .gap = 2) {
+                cui_heading(ui, "Statistics", 2);
+                cui_muted(ui, a->connected ? "Live from the aria2 engine."
+                                           : "Engine offline — showing the last samples.");
+            }
+            cui_spacer(ui);
+            if (a->connected)
+                cui_badge(ui, "Live", .tone = CUI_TONE_SUCCESS, .dot = true);
+        }
+        cui_row(ui, .width = CUI_FILL, .gap = 10, .align = CUI_ALIGN_STRETCH) {
+            char v[32];
+            snprintf(v, sizeof v, "%d", count_status(a, "active"));
+            cui_metric(ui, "Active", v, .icon = CUI_ICON_ACTIVITY);
+            snprintf(v, sizeof v, "%d", count_status(a, "waiting") + count_status(a, "paused"));
+            cui_metric(ui, "Waiting", v, .icon = CUI_ICON_CLOCK);
+            snprintf(v, sizeof v, "%d", count_status(a, "complete"));
+            cui_metric(ui, "Complete", v, .icon = CUI_ICON_CIRCLE_CHECK);
+        }
+        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
+            cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
+                cui_text(ui, "Transfer speed", .font = CUI_FONT_MEDIUM, .size = 14);
+                cui_spacer(ui);
+                cui_text(ui, "KB/s · last minute", .size = 11, .color = CUI_COLOR_TEXT_MUTED);
+            }
+            if (a->hist_count > 1) {
+                cui_series series[2] = {
+                    {"Download", a->hist_down, a->hist_count, CUI_COLOR_ACCENT_STRONG},
+                    {"Upload", a->hist_up, a->hist_count, CUI_COLOR_SERIES(1)},
+                };
+                cui_line_chart(ui, "speed-history", series, 2, .height = 170,
+                               .labels = a->hist_labels, .label_count = a->hist_count,
+                               .smooth = true, .area = true);
+            } else {
+                cui_muted(ui, "Collecting samples…");
+            }
+        }
+        cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_STRETCH) {
+            cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 8) {
+                cui_text(ui, "Downloads by state", .font = CUI_FONT_MEDIUM, .size = 14);
+                float values[5] = {
+                    (float)count_status(a, "active"),
+                    (float)count_status(a, "waiting"),
+                    (float)count_status(a, "paused"),
+                    (float)count_status(a, "complete"),
+                    (float)(count_status(a, "error") + count_status(a, "removed")),
+                };
+                static const char *labels[5] = {"Active", "Waiting", "Paused", "Complete",
+                                                "Failed"};
+                float total = 0;
+                for (int i = 0; i < 5; i++) total += values[i];
+                if (total > 0)
+                    cui_donut_chart(ui, "state-donut", values, labels, 5, .height = 170);
+                else
+                    cui_muted(ui, "No downloads yet.");
+            }
+            cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
+                cui_text(ui, "Disk space", .font = CUI_FONT_MEDIUM, .size = 14);
+                double used = 0, total = 0;
+                unsigned long long free_bytes = 0;
+                if (disk_usage(a->cfg.download_dir, &used, &total, &free_bytes)) {
+                    float used_gb = (float)((long long)(used * 10.0) / 10.0);
+                    float total_gb = (float)((long long)(total * 10.0) / 10.0);
+                    cui_meter(ui, "Used", used_gb, total_gb, "GB");
+                    char free_text[32];
+                    fmt_bytes(free_text, sizeof free_text, free_bytes);
+                    cui_row(ui, .width = CUI_FILL) {
+                        cui_text(ui, "Free", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
+                        cui_spacer(ui);
+                        cui_text(ui, free_text, .size = 12, .tabular = true);
+                    }
+                } else {
+                    cui_muted(ui, "Cannot read the download folder.");
+                }
+                cui_muted(ui, a->cfg.download_dir);
+            }
+        }
+    }
+}
+
 static void content(App *a, cui_ctx *ui) {
+    if (a->show_stats) {
+        stats_page(a, ui);
+        return;
+    }
     Download *sel = find_item(a, a->selected);
     bool can_pause = sel && (!strcmp(sel->status, "active") || !strcmp(sel->status, "waiting"));
     bool can_resume = sel && !strcmp(sel->status, "paused");
@@ -721,21 +1017,41 @@ static void content(App *a, cui_ctx *ui) {
                                 .disabled = !sel))
                 remove_selected(a);
         }
+        int picks = checked_count(a);
+        if (picks > 0) {
+            cui_row(ui, .width = CUI_FILL, .bg = CUI_COLOR_SURFACE_RAISED, .border = 1,
+                    .border_color = CUI_COLOR_BORDER, .radius = 8, .pad_x = 12, .pad_y = 6,
+                    .gap = 8, .align = CUI_ALIGN_CENTER) {
+                char label[48];
+                snprintf(label, sizeof label, "%d selected", picks);
+                cui_text(ui, label, .font = CUI_FONT_MEDIUM, .size = 12,
+                         .color = CUI_COLOR_ACCENT_STRONG);
+                cui_spacer(ui);
+                if (cui_button(ui, "Pause", .icon = CUI_ICON_PAUSE, .size = CUI_SIZE_SM,
+                               .variant = CUI_BUTTON_GHOST))
+                    bulk_toggle(a, true);
+                if (cui_button(ui, "Resume", .icon = CUI_ICON_PLAY, .size = CUI_SIZE_SM,
+                               .variant = CUI_BUTTON_GHOST))
+                    bulk_toggle(a, false);
+                if (cui_button(ui, "Remove", .icon = CUI_ICON_TRASH_2, .size = CUI_SIZE_SM,
+                               .variant = CUI_BUTTON_GHOST))
+                    bulk_remove(a);
+                if (cui_icon_button(ui, CUI_ICON_X, .size = CUI_SIZE_SM,
+                                    .tooltip = "Clear selection"))
+                    clear_checks(a);
+            }
+        }
         download_table(a, ui);
     }
 }
 
 static void statusbar(App *a, cui_ctx *ui) {
-    char down[32], up[32], count[48];
-    fmt_speed(down, sizeof down, a->gs.down_speed);
-    fmt_speed(up, sizeof up, a->gs.up_speed);
+    char count[48];
     snprintf(count, sizeof count, "%d downloads", a->count);
     cui_status_bar(ui, "statusbar") {
         cui_status_bar_text(ui, a->status);
         cui_status_bar_spacer(ui);
         cui_status_bar_text(ui, count);
-        cui_status_bar_text(ui, down);
-        cui_status_bar_text(ui, up);
     }
 }
 
@@ -796,48 +1112,123 @@ static void add_dialog(App *a, cui_ctx *ui) {
 
 static void settings_dialog(App *a, cui_ctx *ui) {
     if (!a->show_settings) return;
-    cui_dialog(ui, "Settings", &a->show_settings, .width = 520) {
-        cui_label(ui, "Save to");
-        cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-            cui_input(ui, "set-dir", a->edit.download_dir, sizeof a->edit.download_dir,
-                      .width = CUI_FILL);
-            if (cui_button(ui, "Browse…", .size = CUI_SIZE_SM)) {
-                char path[PATH_MAX];
-                if (cui_app_file_dialog(NULL,
-                                        &(cui_file_dialog_opts){.kind = CUI_FILE_FOLDER,
-                                                                .title = "Save downloads to"},
-                                        path, sizeof path))
-                    snprintf(a->edit.download_dir, sizeof a->edit.download_dir, "%s", path);
+    static const char *tabs[] = {"General", "Bandwidth", "Torrents"};
+    static const char *icons[] = {CUI_ICON_SETTINGS, CUI_ICON_SLIDERS_HORIZONTAL,
+                                  CUI_ICON_GLOBE};
+    float body_h = cui_viewport_size(ui).y > 760 ? 430 : 300;
+    cui_dialog(ui, "Settings", &a->show_settings, .width = 640) {
+        cui_tabs(ui, "settings-tabs", tabs, 3, &a->settings_tab, .icons = icons);
+        if (a->settings_seen_tab != a->settings_tab) {
+            cui_scroll_to(ui, "settings-body", 0);
+            a->settings_seen_tab = a->settings_tab;
+        }
+        cui_scroll(ui, .id = "settings-body", .width = CUI_FILL, .height = CUI_PX(body_h),
+                   .gap = 16, .fade_edges = true,
+                   .fade_color = CUI_COLOR_SURFACE_RAISED) {
+            if (a->settings_tab == 0) {
+                cui_heading(ui, "Storage", 4);
+                cui_label(ui, "Save to");
+                cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                    cui_input(ui, "set-dir", a->edit.download_dir,
+                              sizeof a->edit.download_dir, .width = CUI_FILL);
+                    if (cui_button(ui, "Browse…", .size = CUI_SIZE_SM)) {
+                        char path[PATH_MAX];
+                        if (cui_app_file_dialog(NULL,
+                                                &(cui_file_dialog_opts){
+                                                    .kind = CUI_FILE_FOLDER,
+                                                    .title = "Save downloads to"},
+                                                path, sizeof path))
+                            snprintf(a->edit.download_dir, sizeof a->edit.download_dir, "%s",
+                                     path);
+                    }
+                }
+                cui_muted(ui, "New downloads start here. Existing downloads keep their folder.");
+
+                cui_heading(ui, "Engine", 4);
+                float concurrent = (float)a->edit.max_concurrent;
+                if (cui_slider(ui, "Max concurrent downloads", &concurrent, 1, 16,
+                               .step = 1, .show_value = true, .width = CUI_FILL))
+                    a->edit.max_concurrent = (int)concurrent;
+                double port = a->edit.rpc_port;
+                if (cui_number(ui, "set-port", &port, 1024, 65535, .label = "RPC port",
+                               .step = 1, .width = CUI_PX(240)))
+                    a->edit.rpc_port = (int)port;
+                cui_muted(ui, "A new RPC port applies after Greed restarts.");
+
+                cui_heading(ui, "Behavior", 4);
+                cui_switch(ui, "Start aria2 automatically", &a->edit.auto_start_aria2,
+                           .description = "Launch the engine when Greed opens.");
+                cui_switch(ui, "Watch clipboard for links", &a->edit.clipboard_monitor,
+                           .description = "Offer a download when a link is copied.");
+                cui_switch(ui, "Notify when a download completes", &a->edit.notify_on_complete,
+                           .description = "Send a desktop notification on completion.");
+            } else if (a->settings_tab == 1) {
+                cui_heading(ui, "Live throughput", 4);
+                if (a->hist_count > 1) {
+                    float peak = 0;
+                    for (int i = 0; i < a->hist_count; i++)
+                        if (a->hist_down[i] > peak) peak = a->hist_down[i];
+                    char limit_label[48];
+                    cui_chart_annotation limit_line;
+                    int lines = 0;
+                    float limit = (float)a->edit.max_download_limit;
+                    if (limit > 0) {
+                        snprintf(limit_label, sizeof limit_label, "Limit %d KB/s",
+                                 a->edit.max_download_limit);
+                        limit_line = (cui_chart_annotation){
+                            .kind = CUI_ANNOTATION_Y, .y = limit, .label = limit_label};
+                        lines = 1;
+                    }
+                    cui_series series = {"Download", a->hist_down, a->hist_count,
+                                         CUI_COLOR_ACCENT_STRONG};
+                    cui_line_chart(ui, "bw-history", &series, 1, .height = 150,
+                                   .labels = a->hist_labels, .label_count = a->hist_count,
+                                   .smooth = true, .area = true, .format = "%.0f",
+                                   .annotations = lines ? &limit_line : NULL,
+                                   .annotation_count = lines, .min = 0,
+                                   .max = limit > peak ? limit * 1.15f : 0);
+                } else {
+                    cui_muted(ui, "Collecting samples…");
+                }
+                cui_muted(ui, "Download speed in KB/s, sampled over the last minute.");
+
+                cui_heading(ui, "Global limits", 4);
+                cui_muted(ui, "0 means unlimited. Limits apply to every download, and reach "
+                              "the running engine when you save.");
+                float download = (float)a->edit.max_download_limit;
+                if (cui_slider(ui, "Download limit", &download, 0, 102400, .step = 128,
+                               .show_value = true, .format = "%.0f KB/s", .width = CUI_FILL))
+                    a->edit.max_download_limit = (int)download;
+                float upload = (float)a->edit.max_upload_limit;
+                if (cui_slider(ui, "Upload limit", &upload, 0, 51200, .step = 64,
+                               .show_value = true, .format = "%.0f KB/s", .width = CUI_FILL))
+                    a->edit.max_upload_limit = (int)upload;
+                cui_muted(ui, "The title bar shows the current transfer rates.");
+            } else {
+                cui_heading(ui, "Seeding", 4);
+                cui_switch(ui, "Keep seeding after download",
+                           &a->edit.seed_after_complete,
+                           .description = "Share finished torrents with other peers.");
+                float ratio = a->edit.seed_ratio;
+                if (cui_slider(ui, "Stop at ratio", &ratio, 0.5f, 5.0f, .step = 0.5f,
+                               .show_value = true, .format = "%.1f×",
+                               .disabled = !a->edit.seed_after_complete,
+                               .width = CUI_FILL))
+                    a->edit.seed_ratio = ratio;
+                cui_muted(ui, "aria2 stops a torrent when its uploaded bytes reach this "
+                              "multiple of the downloaded bytes.");
             }
         }
-        double concurrent = a->edit.max_concurrent;
-        if (cui_number(ui, "set-concurrent", &concurrent, 1, 16,
-                       .label = "Max concurrent downloads", .step = 1, .width = CUI_PX(240)))
-            a->edit.max_concurrent = (int)concurrent;
-        double port = a->edit.rpc_port;
-        if (cui_number(ui, "set-port", &port, 1024, 65535, .label = "RPC port", .step = 1))
-            a->edit.rpc_port = (int)port;
-        cui_muted(ui, "The RPC port applies after restarting Greed.");
-        cui_switch(ui, "Start aria2 automatically", &a->edit.auto_start_aria2);
-        cui_switch(ui, "Watch clipboard for links", &a->edit.clipboard_monitor);
-        cui_switch(ui, "Notify when a download completes", &a->edit.notify_on_complete);
         cui_dialog_footer(ui) {
             if (cui_button(ui, "Cancel", .variant = CUI_BUTTON_GHOST)) a->show_settings = false;
             if (cui_button(ui, "Save", .variant = CUI_BUTTON_PRIMARY)) {
                 a->cfg = a->edit;
                 if (!config_save(&a->cfg)) set_status(a, "Could not save settings");
                 else set_status(a, "Settings saved");
-                char value[16];
-                snprintf(value, sizeof value, "%d", a->cfg.max_concurrent);
-                struct json_object *opts = json_object_new_object();
-                json_object_object_add(opts, "max-concurrent-downloads",
-                                       json_object_new_string(value));
-                struct json_object *params = json_object_new_array();
-                json_object_array_add(params, opts);
-                struct json_object *v =
-                    rpc_call(&a->rpc, "aria2.changeGlobalOption", params);
-                if (v) json_object_put(v);
+                a->engine_applied = false;
+                apply_engine_options(a);
                 a->show_settings = false;
+                a->last_poll = 0;
             }
         }
     }
@@ -845,11 +1236,17 @@ static void settings_dialog(App *a, cui_ctx *ui) {
 
 static void handle_keys(App *a, cui_ctx *ui) {
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_N)) open_add(a);
-    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_F)) a->focus_search = true;
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_F)) {
+        a->show_stats = false;
+        a->focus_search = true;
+    }
     if (cui_wants_keyboard(ui)) return;
     if (cui_key_pressed(ui, CUI_KEY_DELETE)) remove_selected(a);
     if (cui_key_pressed(ui, CUI_KEY_SPACE)) toggle_selected(a);
-    if (cui_key_pressed(ui, CUI_KEY_ESCAPE)) a->selected[0] = 0;
+    if (cui_key_pressed(ui, CUI_KEY_ESCAPE)) {
+        a->selected[0] = 0;
+        clear_checks(a);
+    }
 }
 
 static void frame(cui_ctx *ui, void *user) {
@@ -867,7 +1264,11 @@ static void frame(cui_ctx *ui, void *user) {
     double now = cui_time(ui);
     if (now - a->last_poll >= 0.8) {
         a->last_poll = now;
+        bool was_connected = a->connected;
         poll_engine(a);
+        if (a->connected && (!was_connected || !a->engine_applied))
+            apply_engine_options(a);
+        sample_speed(a);
     }
     /* Screenshot/test hook: GREED_DEMO=details selects the first download. */
     if (a->demo_details && !a->selected[0] && a->count)
@@ -901,8 +1302,7 @@ static void frame(cui_ctx *ui, void *user) {
 int ui_run(void) {
     Config cfg;
     config_load(&cfg);
-    if (cfg.auto_start_aria2)
-        aria2_ensure_running(cfg.rpc_port, cfg.download_dir, cfg.max_concurrent, true);
+    if (cfg.auto_start_aria2) aria2_ensure_running(&cfg, true);
 
     App *a = calloc(1, sizeof *a);
     if (!a) return 1;
@@ -914,11 +1314,18 @@ int ui_run(void) {
     snprintf(a->status, sizeof a->status, "Ready");
     rpc_init(&a->rpc, cfg.rpc_port);
 
-    /* Test hook for screenshots: GREED_DEMO=add|settings|details|empty */
+    /* Test hook for screenshots: GREED_DEMO=add|settings|settings-bandwidth|settings-torrents|details|stats|empty */
     const char *demo = getenv("GREED_DEMO");
     if (demo && !strcmp(demo, "add")) open_add(a);
     else if (demo && !strcmp(demo, "settings")) open_settings(a);
-    else if (demo && !strcmp(demo, "details")) a->demo_details = true;
+    else if (demo && !strcmp(demo, "settings-bandwidth")) {
+        open_settings(a);
+        a->settings_tab = 1;
+    } else if (demo && !strcmp(demo, "settings-torrents")) {
+        open_settings(a);
+        a->settings_tab = 2;
+    } else if (demo && !strcmp(demo, "details")) a->demo_details = true;
+    else if (demo && !strcmp(demo, "stats")) a->show_stats = true;
     else if (demo && !strcmp(demo, "empty")) snprintf(a->filter, sizeof a->filter, "zzzz");
 
     int rc = cui_app_run(&(cui_app_desc){.title = "Greed",

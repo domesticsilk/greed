@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <json-c/json.h>
 
+#include "config.h"
+
 typedef struct {
     int port;
     char error[512];
@@ -23,9 +25,11 @@ bool rpc_probe(Rpc *r);
 const char *aria2_binary(void);
 const char *aria2_lib_dir(void);
 bool aria2_available(void);
-bool aria2_spawn(int port, const char *dir, int max_concurrent);
+bool aria2_spawn(const Config *cfg);
+/* Applies the config's global limits to a running engine. */
+bool aria2_apply_options(Rpc *r, const Config *cfg);
 /* Starts aria2 when it is not running. Returns true when the RPC answers. */
-bool aria2_ensure_running(int port, const char *dir, int max_concurrent, bool auto_start);
+bool aria2_ensure_running(const Config *cfg, bool auto_start);
 
 /* Base64-encodes a whole file (aria2.addTorrent). Caller frees. */
 char *base64_file(const char *path, size_t *out_len);

@@ -7,6 +7,10 @@ typedef struct {
     char download_dir[1024];
     int max_concurrent;
     int rpc_port;
+    int max_download_limit;    /* KB/s, 0 = unlimited */
+    int max_upload_limit;      /* KB/s, 0 = unlimited */
+    bool seed_after_complete;
+    float seed_ratio;
     bool auto_start_aria2;
     bool clipboard_monitor;
     bool notify_on_complete;

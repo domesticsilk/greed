@@ -17,7 +17,7 @@ find_package(Threads REQUIRED)
 add_library(cui_vendor STATIC vendor/cui/cui.c)
 target_include_directories(cui_vendor PUBLIC vendor/cui)
 target_compile_options(cui_vendor PRIVATE -w)
-target_link_libraries(cui_vendor PUBLIC ${X11_LIBRARIES} ${CMAKE_DL_LIBS} m Threads::Threads)
+target_link_libraries(cui_vendor PUBLIC ${X11_LIBRARIES} Xext ${CMAKE_DL_LIBS} m Threads::Threads)
 
 add_executable(greed
     src/main.c

@@ -41,6 +41,10 @@ void config_defaults(Config *c) {
     snprintf(c->download_dir, sizeof c->download_dir, "~/Downloads");
     c->max_concurrent = 5;
     c->rpc_port = 6800;
+    c->max_download_limit = 0;
+    c->max_upload_limit = 0;
+    c->seed_after_complete = true;
+    c->seed_ratio = 1.0f;
     c->auto_start_aria2 = true;
     c->clipboard_monitor = true;
     c->notify_on_complete = true;
@@ -67,6 +71,12 @@ static int jint(struct json_object *v, const char *key, int fallback) {
     return fallback;
 }
 
+static double jdouble(struct json_object *v, const char *key, double fallback) {
+    struct json_object *o;
+    if (json_object_object_get_ex(v, key, &o)) return json_object_get_double(o);
+    return fallback;
+}
+
 void config_load(Config *c) {
     config_defaults(c);
     FILE *f = fopen(config_path(), "r");
@@ -87,6 +97,10 @@ void config_load(Config *c) {
             if (dir) snprintf(c->download_dir, sizeof c->download_dir, "%s", dir);
             c->max_concurrent = jint(v, "max_concurrent", c->max_concurrent);
             c->rpc_port = jint(v, "rpc_port", c->rpc_port);
+            c->max_download_limit = jint(v, "max_download_limit", c->max_download_limit);
+            c->max_upload_limit = jint(v, "max_upload_limit", c->max_upload_limit);
+            c->seed_after_complete = jbool(v, "seed_after_complete", c->seed_after_complete);
+            c->seed_ratio = (float)jdouble(v, "seed_ratio", c->seed_ratio);
             c->auto_start_aria2 = jbool(v, "auto_start_aria2", c->auto_start_aria2);
             c->clipboard_monitor = jbool(v, "clipboard_monitor", c->clipboard_monitor);
             c->notify_on_complete = jbool(v, "notify_on_complete", c->notify_on_complete);
@@ -104,6 +118,10 @@ bool config_save(const Config *c) {
     json_object_object_add(v, "download_dir", json_object_new_string(c->download_dir));
     json_object_object_add(v, "max_concurrent", json_object_new_int(c->max_concurrent));
     json_object_object_add(v, "rpc_port", json_object_new_int(c->rpc_port));
+    json_object_object_add(v, "max_download_limit", json_object_new_int(c->max_download_limit));
+    json_object_object_add(v, "max_upload_limit", json_object_new_int(c->max_upload_limit));
+    json_object_object_add(v, "seed_after_complete", json_object_new_boolean(c->seed_after_complete));
+    json_object_object_add(v, "seed_ratio", json_object_new_double(c->seed_ratio));
     json_object_object_add(v, "auto_start_aria2", json_object_new_boolean(c->auto_start_aria2));
     json_object_object_add(v, "clipboard_monitor", json_object_new_boolean(c->clipboard_monitor));
     json_object_object_add(v, "notify_on_complete", json_object_new_boolean(c->notify_on_complete));

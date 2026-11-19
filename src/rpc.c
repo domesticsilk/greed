@@ -161,19 +161,24 @@ bool aria2_available(void) {
     return WIFEXITED(st) && WEXITSTATUS(st) == 0;
 }
 
-bool aria2_spawn(int port, const char *dir, int max_concurrent) {
+bool aria2_spawn(const Config *cfg) {
     const char *bin = aria2_binary();
     const char *lib = aria2_lib_dir();
     char session[PATH_MAX];
     snprintf(session, sizeof session, "%s/aria2.session", config_dir());
 
     char sport[32], smax[32], sdir[PATH_MAX + 8], ssess[PATH_MAX + 16], sinput[PATH_MAX + 16];
-    snprintf(sport, sizeof sport, "--rpc-listen-port=%d", port);
-    snprintf(smax, sizeof smax, "--max-concurrent-downloads=%d", max_concurrent);
-    snprintf(sdir, sizeof sdir, "--dir=%s", dir);
+    char sdl[64], sul[64], sseed[64];
+    snprintf(sport, sizeof sport, "--rpc-listen-port=%d", cfg->rpc_port);
+    snprintf(smax, sizeof smax, "--max-concurrent-downloads=%d", cfg->max_concurrent);
+    snprintf(sdir, sizeof sdir, "--dir=%s", cfg->download_dir);
     snprintf(ssess, sizeof ssess, "--save-session=%s", session);
+    snprintf(sdl, sizeof sdl, "--max-overall-download-limit=%d", cfg->max_download_limit * 1024);
+    snprintf(sul, sizeof sul, "--max-overall-upload-limit=%d", cfg->max_upload_limit * 1024);
+    snprintf(sseed, sizeof sseed, "--seed-ratio=%.2f",
+             cfg->seed_after_complete ? (double)cfg->seed_ratio : 0.0);
 
-    const char *argv[16];
+    const char *argv[20];
     int n = 0;
     argv[n++] = bin;
     argv[n++] = "--enable-rpc";
@@ -182,6 +187,9 @@ bool aria2_spawn(int port, const char *dir, int max_concurrent) {
     argv[n++] = smax;
     argv[n++] = sdir;
     argv[n++] = ssess;
+    argv[n++] = sdl;
+    argv[n++] = sul;
+    argv[n++] = sseed;
     argv[n++] = "--save-session-interval=30";
     argv[n++] = "--continue=true";
     argv[n++] = "--daemon=true";
@@ -207,15 +215,40 @@ bool aria2_spawn(int port, const char *dir, int max_concurrent) {
     return WIFEXITED(st) && WEXITSTATUS(st) == 0;
 }
 
-bool aria2_ensure_running(int port, const char *dir, int max_concurrent, bool auto_start) {
+bool aria2_apply_options(Rpc *r, const Config *cfg) {
+    struct json_object *opts = json_object_new_object();
+    char v[32];
+    snprintf(v, sizeof v, "%d", cfg->max_concurrent);
+    json_object_object_add(opts, "max-concurrent-downloads", json_object_new_string(v));
+    snprintf(v, sizeof v, "%lld", (long long)cfg->max_download_limit * 1024);
+    json_object_object_add(opts, "max-overall-download-limit", json_object_new_string(v));
+    snprintf(v, sizeof v, "%lld", (long long)cfg->max_upload_limit * 1024);
+    json_object_object_add(opts, "max-overall-upload-limit", json_object_new_string(v));
+    snprintf(v, sizeof v, "%.2f", cfg->seed_after_complete ? (double)cfg->seed_ratio : 0.0);
+    json_object_object_add(opts, "seed-ratio", json_object_new_string(v));
+    struct json_object *params = json_object_new_array();
+    json_object_array_add(params, opts);
+    struct json_object *res = rpc_call(r, "aria2.changeGlobalOption", params);
+    if (!res) return false;
+    json_object_put(res);
+    return true;
+}
+
+bool aria2_ensure_running(const Config *cfg, bool auto_start) {
     Rpc r;
-    rpc_init(&r, port);
-    if (rpc_probe(&r)) return true;
+    rpc_init(&r, cfg->rpc_port);
+    if (rpc_probe(&r)) {
+        aria2_apply_options(&r, cfg);
+        return true;
+    }
     if (!auto_start || !aria2_available()) return false;
-    aria2_spawn(port, dir, max_concurrent);
+    aria2_spawn(cfg);
     for (int i = 0; i < 25; i++) {
         usleep(100000);
-        if (rpc_probe(&r)) return true;
+        if (rpc_probe(&r)) {
+            aria2_apply_options(&r, cfg);
+            return true;
+        }
     }
     return false;
 }

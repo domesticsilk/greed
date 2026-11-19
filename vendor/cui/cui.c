@@ -71567,6 +71567,7 @@ struct cui_app {
     void *frame_user;
     bool in_live_resize;
     void *plat;                /* backend state */
+    void (*sync_ack)(cui_app *app);   /* X11: tell the WM the requested frame is on screen */
     char *clipboard;           /* last clipboard string handed to CUI */
     const char *screenshot_path;  /* CUI_SCREENSHOT: save a PNG and quit */
     int screenshot_frames;
@@ -71783,6 +71784,7 @@ void cui__app_render(cui_app *app) {
             cui__plat_present(app, app->sw_pixels, w, h, w * 4);
         app->force_present = false;
     }
+    if (app->sync_ack) app->sync_ack(app);
     app->presented_once = true;
     app->last_present = cui__plat_now();
 }
@@ -73661,6 +73663,7 @@ void cui__plat_gl_release(cui_app *app) { (void)app; }   /* not used: these keep
 #include <X11/keysym.h>
 #include <X11/cursorfont.h>
 #include <X11/Xresource.h>
+#include <X11/extensions/sync.h>
 #include <dlfcn.h>
 #include <locale.h>
 #include <sys/select.h>
@@ -73712,6 +73715,12 @@ typedef struct {
     XIM im;
     XIC ic;
     Atom wm_delete, wm_protocols, net_wm_name, utf8_string, clipboard, targets, cui_sel, net_wm_icon_name;
+    /* Greed patch: _NET_WM_SYNC_REQUEST, so the compositor waits for a finished frame
+     * while the window is resized instead of showing half-drawn sizes. */
+    Atom wm_sync_request, wm_sync_counter;
+    XSyncCounter sync_counter;
+    bool sync_pending;
+    uint64_t sync_value;
     Cursor cursors[CUI_CURSOR_COUNT];
     cui_cursor current_cursor;
     int width, height;     /* pixels */
@@ -73742,6 +73751,16 @@ typedef struct {
 static cui__x11 *cui__x(cui_app *app) { return app->plat; }
 static void *cui__x11_libgl;
 static PFN_glXGetProcAddress cui__x11_getproc;
+
+static void cui__x11_sync_ack(cui_app *app) {
+    cui__x11 *x = cui__x(app);
+    if (!x->sync_pending || !x->sync_counter) return;
+    XSyncValue v;
+    XSyncIntsToValue(&v, (unsigned int)(x->sync_value & 0xffffffffu),
+                     (int)(x->sync_value >> 32));
+    XSyncSetCounter(x->dpy, x->sync_counter, v);
+    x->sync_pending = false;
+}
 
 double cui__plat_now(void) {
     struct timespec ts;
@@ -73854,7 +73873,18 @@ bool cui__plat_init(cui_app *app) {
     x->clipboard = XInternAtom(x->dpy, "CLIPBOARD", False);
     x->targets = XInternAtom(x->dpy, "TARGETS", False);
     x->cui_sel = XInternAtom(x->dpy, "CUI_SELECTION", False);
-    XSetWMProtocols(x->dpy, x->win, &x->wm_delete, 1);
+    /* Greed patch: a sync counter lets KWin hold the resize until a finished frame. */
+    x->wm_sync_request = XInternAtom(x->dpy, "_NET_WM_SYNC_REQUEST", False);
+    x->wm_sync_counter = XInternAtom(x->dpy, "_NET_WM_SYNC_REQUEST_COUNTER", False);
+    XSyncValue zero;
+    XSyncIntToValue(&zero, 0);
+    x->sync_counter = XSyncCreateCounter(x->dpy, zero);
+    if (x->sync_counter)
+        XChangeProperty(x->dpy, x->win, x->wm_sync_counter, XA_CARDINAL, 32, PropModeReplace,
+                        (unsigned char *)&x->sync_counter, 1);
+    Atom protocols[2] = {x->wm_delete, x->wm_sync_request};
+    XSetWMProtocols(x->dpy, x->win, protocols, 2);
+    app->sync_ack = cui__x11_sync_ack;
     /* accept files dragged from file managers (XDND version 5) */
     x->xdnd_aware = XInternAtom(x->dpy, "XdndAware", False);
     x->xdnd_enter = XInternAtom(x->dpy, "XdndEnter", False);
@@ -73928,6 +73958,7 @@ void cui__plat_shutdown(cui_app *app) {
     if (x->im) XCloseIM(x->im);
     for (int i = 0; i < CUI_CURSOR_COUNT; i++) if (x->cursors[i]) XFreeCursor(x->dpy, x->cursors[i]);
     if (x->gc) XFreeGC(x->dpy, x->gc);
+    if (x->sync_counter) XSyncDestroyCounter(x->dpy, x->sync_counter);
     XDestroyWindow(x->dpy, x->win);
     XFreeColormap(x->dpy, x->cmap);
     XCloseDisplay(x->dpy);
@@ -74271,6 +74302,13 @@ static void cui__x11_event(cui_app *app, XEvent *ev) {
     switch (ev->type) {
     case ClientMessage:
         if (cui__x11_xdnd_message(app, &ev->xclient)) break;
+        if (ev->xclient.message_type == x->wm_protocols &&
+            (Atom)ev->xclient.data.l[0] == x->wm_sync_request) {
+            x->sync_value = (uint64_t)(uint32_t)ev->xclient.data.l[2] |
+                            ((uint64_t)(uint32_t)ev->xclient.data.l[3] << 32);
+            x->sync_pending = true;
+            break;
+        }
         if ((Atom)ev->xclient.data.l[0] == x->wm_delete) app->running = false;
         break;
     case SelectionNotify:

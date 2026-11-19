@@ -13,8 +13,7 @@ static Rpc rpc;
 static bool ensure_client(const Config *cfg) {
     rpc_init(&rpc, cfg->rpc_port);
     if (rpc_probe(&rpc)) return true;
-    if (!aria2_ensure_running(cfg->rpc_port, cfg->download_dir, cfg->max_concurrent,
-                              cfg->auto_start_aria2)) {
+    if (!aria2_ensure_running(cfg, cfg->auto_start_aria2)) {
         fprintf(stderr, "error: aria2 RPC not available. Start aria2c --enable-rpc or install aria2.\n");
         return false;
     }
