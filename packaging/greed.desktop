@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Greed
+GenericName=Download Manager
+Comment=Download files and torrents with aria2
+Exec=greed
+Icon=greed
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=download;torrent;magnet;aria2;
+StartupWMClass=greed

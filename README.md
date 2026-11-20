@@ -77,6 +77,16 @@ cmake --build build -j
 `cui.c` is the large translation unit (~30 s on a slow machine); CMake builds it once as a
 static library, so later rebuilds only touch the app sources.
 
+## AppImage
+
+```sh
+./packaging/build-appimage.sh
+```
+
+It writes `build/Greed-x86_64.AppImage` (about 3.4 MB) with the private aria2 library
+inside, so the release runs on a machine with no aria2 installed. The first run downloads
+`appimagetool` into `build/`; when FUSE is unavailable the script falls back to extracting it.
+
 ## Usage
 
 ```sh
