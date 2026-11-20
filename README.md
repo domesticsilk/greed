@@ -1,10 +1,12 @@
 # Greed
 
-A dark, keyboard-first download manager for Linux. Greed ships a native GUI and a full
-command-line interface in one C binary, using [aria2](https://aria2.github.io/) as the download
-engine and [CUI](https://github.com/yappologistic/CUI) for its interface.
+**A dark, keyboard-first download manager for Linux.**
 
-![Greed](assets/screenshot.png)
+Greed pairs a native desktop window with a complete command-line interface in one C binary.
+Both drive the same aria2 session: a download started in the window appears in the terminal,
+links handed over by the browser land in the same list, and the core workflow works from the
+keyboard alone. aria2 handles the transfers, CUI draws the interface, and there is no web
+runtime in between.
 
 [![License: GPL-2.0](https://img.shields.io/badge/License-GPL--2.0-1a1a1a?style=for-the-badge&labelColor=000000&logo=gnu&logoColor=ffffff)](LICENSE)
 ![Platform: Linux](https://img.shields.io/badge/Platform-Linux-242424?style=for-the-badge&labelColor=0a0a0a&logo=linux&logoColor=ffffff)
@@ -15,6 +17,15 @@ engine and [CUI](https://github.com/yappologistic/CUI) for its interface.
 ![Themes: 76 built-in](https://img.shields.io/badge/Themes-76_built--in-565656?style=for-the-badge&labelColor=3c3c3c)
 ![Downloads: BitTorrent + Metalink](https://img.shields.io/badge/Downloads-BitTorrent_%2B_Metalink-606060?style=for-the-badge&labelColor=464646)
 ![Display: X11 + XWayland](https://img.shields.io/badge/Display-X11_%2B_XWayland-6a6a6a?style=for-the-badge&labelColor=505050)
+
+![Greed with active, paused, failed and completed downloads](assets/screenshot.png)
+
+<p align="center">
+  <img src="assets/screenshot-statistics.png" width="49%" alt="Statistics view with the throughput chart and download folder">
+  <img src="assets/screenshot-marketplace.png" width="49%" alt="Marketplace with engines, tools and themes">
+</p>
+
+*The Statistics view tracks throughput, transfer limits and free space. The Marketplace screenshot uses the optional Liquid Glass theme.*
 
 ## Contents
 
