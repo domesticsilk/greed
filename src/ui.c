@@ -1300,11 +1300,18 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
     bool mac = mac_chrome(a);
     bool glass = mac_glass(a);
     GlassPaint g = glass_fill(a, ui);
-    cui_box(ui, .dir = CUI_STACK, .width = CUI_PX(width), .height = CUI_FILL) {
+    /* The bright engine pill is the only thing left visible in a very narrow
+     * panel, so fade the contents out at the end instead of letting it sit
+     * there as a lit sliver after the labels are clipped away. */
+    float fade = (width - 70.0f) / 70.0f;
+    if (fade > 1.0f) fade = 1.0f;
+    if (fade < 0.02f) fade = 0.02f;   /* 0 would mean fully opaque */
+    cui_box(ui, .dir = CUI_STACK, .width = CUI_PX(width), .height = CUI_FILL,
+            .bg = glass ? (cui_color){0, 0, 0, 0} : CUI_COLOR_SURFACE) {
         if (glass)
             cui_canvas(ui, "sidebar-glass", CUI_FILL, CUI_FILL, paint_glass, &g, sizeof g);
         cui_column(ui, .width = CUI_FILL, .height = CUI_FILL,
-                   .bg = glass ? (cui_color){0, 0, 0, 0} : CUI_COLOR_SURFACE,
+                   .bg = (cui_color){0, 0, 0, 0}, .opacity = fade,
                    .pad = (mac ? 12 : 10) * active_cfg(a)->spacing, .gap = 2, .clip = true) {
             cui_scroll(ui, .id = "sidebar-nav", .width = CUI_FILL, .height = CUI_FILL, .gap = 2) {
                 cui_nav_section(ui, mac ? "Library" : "LIBRARY");
