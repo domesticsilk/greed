@@ -47897,7 +47897,7 @@ static void cui__toasts_render(cui_ctx *ui) {
         cui__open(ui, col);
         int tt = cui__text_node(ui, t->title, -1, CUI_FONT_MEDIUM, cui__fs(ui, ui->theme.text_body), CUI_C(ui, FOREGROUND), true);
         ui->nodes[tt].line_height = 1.4f;
-        if (t->desc[0]) cui__text_node(ui, t->desc, -1, CUI_FONT_BODY, cui__fs(ui, ui->theme.text_body - 0.5f), CUI_C(ui, TEXT_SECONDARY), true);
+        if (t->desc[0]) cui__text_node(ui, t->desc, -1, CUI_FONT_BODY, cui__fs(ui, ui->theme.text_body - 0.5f), CUI_C(ui, TEXT_SECONDARY), false);
         cui__close(ui);
         if (t->action[0]) {
             cui_button_opts bo;
@@ -68618,7 +68618,7 @@ void cui_scroll_show(cui_ctx *ui, const char *scope, const char *scroll_id, floa
 /* Split view                                                               */
 /* ------------------------------------------------------------------------ */
 
-struct cui_split_build { cui_id id; float *ratio; bool vertical; int container; float min1, min2; struct cui_split_build *prev; float hover; };
+struct cui_split_build { cui_id id; float *ratio; bool vertical; int container; float min1, min2, max1; struct cui_split_build *prev; float hover; };
 typedef struct { float hover; bool rtl; } cui__split_state;
 
 static void cui__paint_split(cui_ctx *ui, cui_node *n, void *data) {
@@ -68635,6 +68635,7 @@ void cui_split_begin(cui_ctx *ui, const char *id_str, float *ratio, const cui_sp
     b->id = id; b->ratio = ratio; b->vertical = o->vertical;
     b->min1 = o->min_first > 0 ? o->min_first : 120;
     b->min2 = o->min_second > 0 ? o->min_second : 120;
+    b->max1 = o->max_first;
     b->prev = ui->building.split;
     ui->building.split = b;
     cui_rect pr = cui__prev_rect(ui, id);
@@ -68644,7 +68645,10 @@ void cui_split_begin(cui_ctx *ui, const char *id_str, float *ratio, const cui_sp
     float total = o->vertical ? pr.h : pr.w;
     if (r.active && ui->mdown[0] && total > 0) {
         float pos = o->vertical ? ui->my - pr.y : st->rtl ? pr.x + pr.w - ui->mx : ui->mx - pr.x;
-        pos = cui__clampf(pos, b->min1, total - b->min2);
+        float hi = total - b->min2;
+        if (b->max1 > 0 && b->max1 < hi) hi = b->max1;
+        if (hi < b->min1) hi = b->min1;
+        pos = cui__clampf(pos, b->min1, hi);
         *ratio = pos / total;
     }
     if (r.hovered || r.active) cui__set_cursor(ui, o->vertical ? CUI_CURSOR_RESIZE_NS : CUI_CURSOR_RESIZE_EW);

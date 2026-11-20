@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -101,12 +102,20 @@ typedef struct {
     int font_pick;
     int spacing_pick;
     bool fonts_ready;
-    bool font_failed[3];
-    int font_applied;
     int font_mac_state;
+    char font_loaded[128];
+    bool font_loaded_mac;
     cui_font font_default[3];
-    cui_font font_user[3][3];
     cui_font font_mac[3];
+    /* CUI has no font unload, so keep the last few families instead of
+     * loading a new file every time the preview changes. */
+    struct {
+        char name[128];
+        bool tried;
+        int result;
+        cui_font font[3];
+    } font_slot[6];
+    int font_slot_count;
     int pending_key;
     double pending_at;
     cui_id menu_anchor;
@@ -135,6 +144,7 @@ typedef struct {
     int info_peer_count, info_peer_total;
     char info_error[512];
     bool sidebar_open;
+    bool sidebar_dirty;
     int settings_tab;
     int settings_seen_tab;
     char theme_query[64];
@@ -178,11 +188,70 @@ static void set_status(App *a, const char *fmt, ...) {
 
 static Config *active_cfg(App *a) { return a->show_settings ? &a->edit : &a->cfg; }
 
-static int font_index(const char *name) {
-    static const char *names[] = {"default", "sans", "serif", "mono"};
-    for (int i = 0; i < 4; i++)
-        if (name && !strcmp(name, names[i])) return i;
-    return 0;
+/* Installed families, listed once and shared by the picker. The first four
+ * entries are the presets, so a font family called "Mono" cannot shadow one. */
+static char **font_names;
+static int font_name_count, font_name_cap;
+
+static void font_name_add(const char *name) {
+    if (!name || !name[0]) return;
+    for (int i = 4; i < font_name_count; i++)
+        if (!strcmp(font_names[i], name)) return;
+    if (font_name_count == font_name_cap) {
+        int cap = font_name_cap ? font_name_cap * 2 : 64;
+        char **grown = realloc(font_names, (size_t)cap * sizeof *grown);
+        if (!grown) return;
+        font_names = grown;
+        font_name_cap = cap;
+    }
+    font_names[font_name_count] = strdup(name);
+    if (font_names[font_name_count]) font_name_count++;
+}
+
+static int font_name_cmp(const void *a, const void *b) {
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+static void font_names_load(void) {
+    if (font_names) return;
+    font_name_add("Default");
+    font_name_add("Sans");
+    font_name_add("Serif");
+    font_name_add("Mono");
+    FILE *p = popen("fc-list -f '%{family}\\n' 2>/dev/null", "r");
+    char line[512];
+    while (p && fgets(line, sizeof line, p)) {
+        char *save = NULL;
+        for (char *tok = strtok_r(line, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+            while (isspace((unsigned char)*tok)) tok++;
+            size_t n = strlen(tok);
+            while (n && isspace((unsigned char)tok[n - 1])) tok[--n] = 0;
+            font_name_add(tok);
+        }
+    }
+    if (p) pclose(p);
+    qsort(font_names + 4, (size_t)(font_name_count - 4), sizeof *font_names, font_name_cmp);
+}
+
+/* Keeps a configured family in the list even when it is no longer installed,
+ * so opening and saving Settings cannot silently replace it. */
+static int font_item_index(const char *name) {
+    font_names_load();
+    if (!name || !name[0] || !strcmp(name, "default")) return 0;
+    if (!strcmp(name, "sans")) return 1;
+    if (!strcmp(name, "serif")) return 2;
+    if (!strcmp(name, "mono")) return 3;
+    for (int i = 4; i < font_name_count; i++)
+        if (!strcasecmp(font_names[i], name)) return i;
+    font_name_add(name);
+    return font_name_count - 1;
+}
+
+static void font_item_value(int index, char *out, size_t cap) {
+    static const char *presets[] = {"default", "sans", "serif", "mono"};
+    const char *value = index >= 0 && index < 4 ? presets[index] : "default";
+    if (index >= 4 && index < font_name_count) value = font_names[index];
+    snprintf(out, cap, "%s", value);
 }
 
 static int spacing_index(float v) {
@@ -202,6 +271,12 @@ static bool mac_glass(App *a) {
     return greed_theme_macos(t) && t->material == GREED_MATERIAL_GLASS;
 }
 
+static float sidebar_width(App *a) {
+    int w = active_cfg(a)->sidebar_width;
+    if (w <= 0) w = mac_chrome(a) ? 220 : 198;
+    return (float)w;
+}
+
 static void apply_theme(cui_ctx *ui, App *a) {
     Config *c = active_cfg(a);
     greed_theme_apply(ui, greed_theme_find(c->theme), c->motion_speed, c->text_scale, c->spacing);
@@ -210,7 +285,7 @@ static void apply_theme(cui_ctx *ui, App *a) {
 static void apply_theme_name(App *a, const char *name) {
     snprintf(a->cfg.theme, sizeof a->cfg.theme, "%s", name);
     snprintf(a->edit.theme, sizeof a->edit.theme, "%s", name);
-    a->font_applied = -1; /* the chrome may swap the font roles */
+    a->font_loaded[0] = 0; /* the chrome may swap the font roles */
     if (config_save(&a->cfg)) set_status(a, "Applied %s", name);
     else set_status(a, "Applied %s, but could not save it", name);
 }
@@ -239,19 +314,71 @@ static GlassPaint glass_fill(App *a, cui_ctx *ui) {
     return g;
 }
 
-/* fc-match is the only portable way to find a family's file on Linux. */
-static cui_font load_font_query(cui_ctx *ui, const char *query) {
-    char cmd[160], path[PATH_MAX] = {0};
-    snprintf(cmd, sizeof cmd, "fc-match -f '%%{file}' '%s' 2>/dev/null", query);
+static bool family_list_has(const char *list, const char *family) {
+    size_t len = strlen(family);
+    while (list && *list) {
+        const char *comma = strchr(list, ',');
+        size_t n = comma ? (size_t)(comma - list) : strlen(list);
+        while (n && *list == ' ') { list++; n--; }
+        while (n && list[n - 1] == ' ') n--;
+        if (n == len && !strncasecmp(list, family, n)) return true;
+        if (!comma) break;
+        list = comma + 1;
+    }
+    return false;
+}
+
+/* fc-match is the only portable way to find a family's file on Linux. It
+ * always returns a fallback, so verify the family when one was named;
+ * otherwise an uninstalled font would silently become another font. */
+static cui_font load_font_query(cui_ctx *ui, const char *query, bool verify) {
+    char quoted[384], cmd[512], out[PATH_MAX + 512] = {0};
+    size_t q = 0;
+    for (const char *s = query; *s && q + 5 < sizeof quoted; s++) {
+        if (*s == '\'') { memcpy(quoted + q, "'\\''", 4); q += 4; }
+        else quoted[q++] = *s;
+    }
+    quoted[q] = 0;
+    snprintf(cmd, sizeof cmd, "fc-match -f '%%{file}\\t%%{family}' '%s' 2>/dev/null", quoted);
     FILE *p = popen(cmd, "r");
     if (!p) return -1;
-    size_t n = fread(path, 1, sizeof path - 1, p);
-    path[n] = 0;
+    size_t n = fread(out, 1, sizeof out - 1, p);
+    out[n] = 0;
     pclose(p);
-    n = strlen(path);
-    while (n && (path[n - 1] == '\n' || path[n - 1] == '\r')) path[--n] = 0;
-    if (!n) return -1;
-    return cui_font_load_file(ui, path);
+    char *tab = strchr(out, '\t');
+    if (!tab) return -1;
+    *tab = 0;
+    char *families = tab + 1;
+    n = strlen(families);
+    while (n && (families[n - 1] == '\n' || families[n - 1] == '\r')) families[--n] = 0;
+    if (verify) {
+        char want[256];
+        size_t w = strcspn(query, ":");
+        if (w >= sizeof want) w = sizeof want - 1;
+        memcpy(want, query, w);
+        want[w] = 0;
+        if (!family_list_has(families, want)) return -2;
+    }
+    if (!out[0]) return -1;
+    return cui_font_load_file(ui, out);
+}
+
+enum { FONT_LOADED = 0, FONT_MISSING, FONT_UNSUPPORTED };
+
+static int load_family(cui_ctx *ui, const char *family, bool verify,
+                       const cui_font fallback[3], cui_font out[3]) {
+    bool missing = false, unsupported = false;
+    for (int r = 0; r < 3; r++) {
+        char query[256];
+        if (r == 1) snprintf(query, sizeof query, "%s:weight=medium", family);
+        else snprintf(query, sizeof query, "%s", family);
+        int f = load_font_query(ui, query, verify);
+        out[r] = (cui_font)f;
+        if (f == -2) missing = true;
+        else if (f < 0) unsupported = true;
+        else cui_font_add_fallback(ui, out[r], fallback[r]);
+    }
+    return missing ? FONT_MISSING : unsupported ? FONT_UNSUPPORTED : FONT_LOADED;
 }
 
 /* Swap the three text roles; icons and the code font keep CUI's defaults. */
@@ -260,17 +387,15 @@ static void apply_typography(App *a, cui_ctx *ui) {
         a->font_default[0] = cui_font_get_role(ui, CUI_FONT_BODY);
         a->font_default[1] = cui_font_get_role(ui, CUI_FONT_MEDIUM);
         a->font_default[2] = cui_font_get_role(ui, CUI_FONT_DISPLAY);
-        for (int i = 0; i < 3; i++)
-            for (int j = 0; j < 3; j++) a->font_user[i][j] = -1;
-        a->font_applied = -1;
+        a->font_loaded[0] = 0;
         a->fonts_ready = true;
     }
     Config *c = active_cfg(a);
-    int pick = font_index(c->font);
+    bool is_default = !c->font[0] || !strcmp(c->font, "default");
     /* macOS chrome prefers San Francisco, then Inter; never bundles a font. */
-    bool mac = pick == 0 && mac_chrome(a);
-    int key = pick + (mac ? 10 : 0);
-    if (key == a->font_applied) return;
+    bool mac = is_default && mac_chrome(a);
+    if (a->font_loaded[0] && a->font_loaded_mac == mac && !strcmp(a->font_loaded, c->font))
+        return;
     if (mac) {
         if (!a->font_mac_state) {
             static const char *first[3] = {"SF Pro Text", "SF Pro Text:weight=medium",
@@ -278,8 +403,8 @@ static void apply_typography(App *a, cui_ctx *ui) {
             static const char *second[3] = {"Inter", "Inter:weight=medium", "Inter"};
             bool ok = true;
             for (int r = 0; r < 3; r++) {
-                cui_font f = load_font_query(ui, first[r]);
-                if (f < 0) f = load_font_query(ui, second[r]);
+                cui_font f = load_font_query(ui, first[r], true);
+                if (f < 0) f = load_font_query(ui, second[r], true);
                 a->font_mac[r] = f;
                 if (f < 0) ok = false;
                 else cui_font_add_fallback(ui, f, a->font_default[r]);
@@ -289,42 +414,56 @@ static void apply_typography(App *a, cui_ctx *ui) {
         for (int r = 0; r < 3; r++)
             cui_font_set_role(ui, (cui_font)r,
                               a->font_mac_state == 1 ? a->font_mac[r] : a->font_default[r]);
-        a->font_applied = key;
-        return;
+        goto done;
     }
-    if (pick == 0) {
+    if (is_default) {
         cui_font_set_role(ui, CUI_FONT_BODY, a->font_default[0]);
         cui_font_set_role(ui, CUI_FONT_MEDIUM, a->font_default[1]);
         cui_font_set_role(ui, CUI_FONT_DISPLAY, a->font_default[2]);
-        a->font_applied = key;
-        return;
+        goto done;
     }
-    static const char *families[] = {"sans-serif", "serif", "monospace"};
-    const char *family = families[pick - 1];
-    if (!a->font_failed[pick - 1]) {
-        bool ok = true;
-        for (int r = 0; r < 3; r++) {
-            if (a->font_user[pick - 1][r] < 0) {
-                char query[64];
-                if (r == 0) snprintf(query, sizeof query, "%s", family);
-                else snprintf(query, sizeof query, "%s:weight=medium", family);
-                cui_font f = load_font_query(ui, query);
-                a->font_user[pick - 1][r] = f;
-                if (f < 0) ok = false;
-                else cui_font_add_fallback(ui, f, a->font_default[r]);
-            }
+    const char *family = c->font;
+    bool preset = true;
+    if (!strcmp(family, "sans")) family = "sans-serif";
+    else if (!strcmp(family, "serif")) family = "serif";
+    else if (!strcmp(family, "mono")) family = "monospace";
+    else preset = false;
+
+    int slot = -1;
+    for (int i = 0; i < a->font_slot_count; i++)
+        if (!strcmp(a->font_slot[i].name, family)) { slot = i; break; }
+    if (slot < 0 && a->font_slot_count < (int)(sizeof a->font_slot / sizeof a->font_slot[0])) {
+        slot = a->font_slot_count++;
+        snprintf(a->font_slot[slot].name, sizeof a->font_slot[slot].name, "%s", family);
+    }
+    int result;
+    cui_font fonts[3];
+    if (slot >= 0) {
+        if (!a->font_slot[slot].tried) {
+            a->font_slot[slot].tried = true;
+            a->font_slot[slot].result = load_family(ui, family, !preset, a->font_default,
+                                                    a->font_slot[slot].font);
         }
-        if (!ok) a->font_failed[pick - 1] = true;
+        result = a->font_slot[slot].result;
+        memcpy(fonts, a->font_slot[slot].font, sizeof fonts);
+    } else {
+        /* shortcut: CUI cannot unload a font, so beyond six families a new
+         * family is loaded again each time instead of cached. */
+        result = load_family(ui, family, !preset, a->font_default, fonts);
     }
-    if (a->font_failed[pick - 1]) {
+    if (result != FONT_LOADED) {
         for (int r = 0; r < 3; r++)
             cui_font_set_role(ui, (cui_font)r, a->font_default[r]);
-        set_status(a, "System %s font not found; keeping the default", family);
+        if (result == FONT_MISSING)
+            set_status(a, "Font %s is not installed; keeping the default", c->font);
+        else
+            set_status(a, "Font %s could not be loaded; keeping the default", c->font);
     } else {
-        for (int r = 0; r < 3; r++)
-            cui_font_set_role(ui, (cui_font)r, a->font_user[pick - 1][r]);
+        for (int r = 0; r < 3; r++) cui_font_set_role(ui, (cui_font)r, fonts[r]);
     }
-    a->font_applied = pick;
+done:
+    snprintf(a->font_loaded, sizeof a->font_loaded, "%s", c->font);
+    a->font_loaded_mac = mac;
 }
 
 
@@ -848,7 +987,7 @@ static void open_settings(App *a) {
     a->settings_seen_tab = -1;
     a->theme_query[0] = 0;
     a->theme_filter = 0;
-    a->font_pick = font_index(a->edit.font);
+    a->font_pick = font_item_index(a->edit.font);
     a->spacing_pick = spacing_index(a->edit.spacing);
     a->show_settings = true;
 }
@@ -1086,10 +1225,6 @@ static void titlebar(App *a, cui_ctx *ui) {
         mac_titlebar(a, ui);
         return;
     }
-    char down[32], up[32];
-    fmt_speed(down, sizeof down, a->gs.down_speed);
-    fmt_speed(up, sizeof up, a->gs.up_speed);
-
     cui_row(ui, .width = CUI_FILL, .height = CUI_PX(46), .bg = CUI_COLOR_SURFACE, .pad_x = 10,
             .gap = 8, .align = CUI_ALIGN_CENTER) {
         if (cui_icon_button(ui, CUI_ICON_PANEL_LEFT, .size = CUI_SIZE_SM,
@@ -1104,11 +1239,6 @@ static void titlebar(App *a, cui_ctx *ui) {
                           .height = CUI_PX(GREED_LOGO_H / 2), .tint = CUI_COLOR_FOREGROUND);
             else
                 cui_text(ui, "Greed", .font = CUI_FONT_MEDIUM, .size = 15);
-            cui_gap(ui, 6);
-            cui_icon(ui, CUI_ICON_ARROW_DOWN, 13, CUI_COLOR_ACCENT_STRONG);
-            cui_text(ui, down, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY, .tabular = true);
-            cui_icon(ui, CUI_ICON_ARROW_UP, 13, CUI_COLOR_TEXT_MUTED);
-            cui_text(ui, up, .size = 12, .color = CUI_COLOR_TEXT_MUTED, .tabular = true);
         }
         if (cui_button(ui, "Add", .icon = CUI_ICON_PLUS, .variant = CUI_BUTTON_PRIMARY,
                        .size = CUI_SIZE_SM))
@@ -1171,7 +1301,7 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
     bool glass = mac_glass(a);
     GlassPaint g = glass_fill(a, ui);
     /* Fade with the width so the clipped labels do not flash while collapsing. */
-    float opacity = width / (mac ? 220.0f : 198.0f);
+    float opacity = width / sidebar_width(a);
     if (opacity > 1.0f) opacity = 1.0f;
     if (opacity < 0.05f) opacity = 0.05f;
 
@@ -1182,47 +1312,48 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
         cui_column(ui, .width = CUI_FILL, .height = CUI_FILL,
                    .bg = glass ? (cui_color){0, 0, 0, 0} : CUI_COLOR_SURFACE,
                    .pad = (mac ? 12 : 10) * active_cfg(a)->spacing, .gap = 2, .clip = true) {
-            cui_nav_section(ui, mac ? "Library" : "LIBRARY");
-            for (int t = 0; t < TAB_COUNT; t++) {
-                char badge[16] = {0};
-                if (counts[t] > 0) snprintf(badge, sizeof badge, "%d", counts[t]);
-                if (cui_nav_item(ui, tab_names[t], .icon = tab_icons[t],
-                                 .badge = badge[0] ? badge : NULL,
-                                 .selected = a->view == VIEW_DOWNLOADS && a->tab == t,
-                                 .group = "tabs")) {
-                    a->tab = t;
-                    a->view = VIEW_DOWNLOADS;
+            cui_scroll(ui, .id = "sidebar-nav", .width = CUI_FILL, .height = CUI_FILL, .gap = 2) {
+                cui_nav_section(ui, mac ? "Library" : "LIBRARY");
+                for (int t = 0; t < TAB_COUNT; t++) {
+                    char badge[16] = {0};
+                    if (counts[t] > 0) snprintf(badge, sizeof badge, "%d", counts[t]);
+                    if (cui_nav_item(ui, tab_names[t], .icon = tab_icons[t],
+                                     .badge = badge[0] ? badge : NULL,
+                                     .selected = a->view == VIEW_DOWNLOADS && a->tab == t,
+                                     .group = "tabs")) {
+                        a->tab = t;
+                        a->view = VIEW_DOWNLOADS;
+                    }
+                }
+                char sched_badge[16] = {0};
+                if (a->sched_count) snprintf(sched_badge, sizeof sched_badge, "%d", a->sched_count);
+                if (cui_nav_item(ui, "Scheduled", .icon = CUI_ICON_CALENDAR,
+                                 .badge = sched_badge[0] ? sched_badge : NULL,
+                                 .selected = a->view == VIEW_SCHEDULED, .group = "tabs"))
+                    a->view = VIEW_SCHEDULED;
+                cui_box(ui, .height = CUI_PX(14)) {}
+                cui_separator(ui);
+                cui_nav_section(ui, mac ? "Insights" : "INSIGHTS");
+                if (cui_nav_item(ui, "Statistics", .icon = CUI_ICON_CHART_LINE,
+                                 .selected = a->view == VIEW_STATS, .group = "tabs"))
+                    a->view = VIEW_STATS;
+                cui_box(ui, .height = CUI_PX(14)) {}
+                cui_separator(ui);
+                cui_nav_section(ui, mac ? "Transfer" : "TRANSFER");
+                char num[32];
+                cui_row(ui, .width = CUI_FILL) {
+                    cui_text(ui, "Active", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
+                    cui_spacer(ui);
+                    snprintf(num, sizeof num, "%llu", a->gs.active);
+                    cui_text(ui, num, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY, .tabular = true);
+                }
+                cui_row(ui, .width = CUI_FILL) {
+                    cui_text(ui, "Queued", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
+                    cui_spacer(ui);
+                    snprintf(num, sizeof num, "%llu", a->gs.waiting);
+                    cui_text(ui, num, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY, .tabular = true);
                 }
             }
-            char sched_badge[16] = {0};
-            if (a->sched_count) snprintf(sched_badge, sizeof sched_badge, "%d", a->sched_count);
-            if (cui_nav_item(ui, "Scheduled", .icon = CUI_ICON_CALENDAR,
-                             .badge = sched_badge[0] ? sched_badge : NULL,
-                             .selected = a->view == VIEW_SCHEDULED, .group = "tabs"))
-                a->view = VIEW_SCHEDULED;
-            cui_box(ui, .height = CUI_PX(14)) {}
-            cui_separator(ui);
-            cui_nav_section(ui, mac ? "Insights" : "INSIGHTS");
-            if (cui_nav_item(ui, "Statistics", .icon = CUI_ICON_CHART_LINE,
-                             .selected = a->view == VIEW_STATS, .group = "tabs"))
-                a->view = VIEW_STATS;
-            cui_box(ui, .height = CUI_PX(14)) {}
-            cui_separator(ui);
-            cui_nav_section(ui, mac ? "Transfer" : "TRANSFER");
-            char num[32];
-            cui_row(ui, .width = CUI_FILL) {
-                cui_text(ui, "Active", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
-                cui_spacer(ui);
-                snprintf(num, sizeof num, "%llu", a->gs.active);
-                cui_text(ui, num, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY, .tabular = true);
-            }
-            cui_row(ui, .width = CUI_FILL) {
-                cui_text(ui, "Queued", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
-                cui_spacer(ui);
-                snprintf(num, sizeof num, "%llu", a->gs.waiting);
-                cui_text(ui, num, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY, .tabular = true);
-            }
-            cui_spacer(ui);
             cui_separator(ui);
             /* Solid status pill; the fill itself fades when the engine comes or goes. */
             float dt = cui_delta_time(ui);
@@ -1453,14 +1584,24 @@ static void download_table(App *a, cui_ctx *ui) {
     /* Text scale grows the fixed columns only partly so long names keep room. */
     float col_scale = 1.0f + (active_cfg(a)->text_scale - 1.0f) * 0.6f;
     bool mac = mac_chrome(a);
-    cui_table_column cols[] = {
-        {mac ? "Name" : "NAME", CUI_FILL, CUI_TEXT_START, false},
-        {mac ? "Size" : "SIZE", CUI_PX(80 * col_scale), CUI_TEXT_RIGHT, false},
-        {mac ? "Progress" : "PROGRESS", CUI_PX(150 * col_scale), CUI_TEXT_START, false},
-        {mac ? "Speed" : "SPEED", CUI_PX(92 * col_scale), CUI_TEXT_RIGHT, false},
-        {mac ? "ETA" : "ETA", CUI_PX(64 * col_scale), CUI_TEXT_RIGHT, false},
-        {mac ? "Status" : "STATUS", CUI_PX(104 * col_scale), CUI_TEXT_START, false},
-    };
+    float panels = (a->sidebar_open ? sidebar_width(a) : 0.0f) +
+                   (a->details_open ? 290.0f : 0.0f);
+    bool narrow = cui_viewport_size(ui).x - panels < 700.0f;
+    cui_table_column cols[6];
+    int ncols = 0;
+    cols[ncols++] = (cui_table_column){mac ? "Name" : "NAME", CUI_FILL, CUI_TEXT_START, false};
+    cols[ncols++] = (cui_table_column){mac ? "Size" : "SIZE", CUI_PX(80 * col_scale),
+                                       CUI_TEXT_RIGHT, false};
+    cols[ncols++] = (cui_table_column){mac ? "Progress" : "PROGRESS",
+                                       CUI_PX(150 * col_scale), CUI_TEXT_START, false};
+    if (!narrow) {
+        cols[ncols++] = (cui_table_column){mac ? "Speed" : "SPEED", CUI_PX(92 * col_scale),
+                                           CUI_TEXT_RIGHT, false};
+        cols[ncols++] = (cui_table_column){mac ? "ETA" : "ETA", CUI_PX(64 * col_scale),
+                                           CUI_TEXT_RIGHT, false};
+    }
+    cols[ncols++] = (cui_table_column){mac ? "Status" : "STATUS", CUI_PX(104 * col_scale),
+                                       CUI_TEXT_START, false};
     double speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
     float step = 1.0f - expf(-cui_delta_time(ui) * 12.0f * speed);
     unsigned filter_hash = hash_text(a->filter);
@@ -1480,7 +1621,7 @@ static void download_table(App *a, cui_ctx *ui) {
         if (fabs(mp.x - a->drag_x) + fabs(mp.y - a->drag_y) > 4) a->drag_moved = true;
         if (a->drag_moved) drag_selection(a, mp);
     }
-    cui_table(ui, "downloads", cols, 6, .height = CUI_FILL, .striped = true,
+    cui_table(ui, "downloads", cols, ncols, .height = CUI_FILL, .striped = true,
               .compact = active_cfg(a)->spacing < 0.96f, .selectable = true) {
         a->row_n = 0;
         for (int r = 0; r < n; r++) {
@@ -1601,20 +1742,22 @@ static void download_table(App *a, cui_ctx *ui) {
                              .tabular = true);
                 }
             }
-            cui_table_cell(ui); {
-                char speed[32];
-                if (!strcmp(d->status, "active")) fmt_speed(speed, sizeof speed, d->down_speed);
-                else snprintf(speed, sizeof speed, "n/a");
-                cui_text(ui, speed, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
-                         .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
-            }
-            cui_table_cell(ui); {
-                char eta[32];
-                unsigned long long secs;
-                if (download_eta(d, &secs)) fmt_eta(eta, sizeof eta, secs);
-                else snprintf(eta, sizeof eta, "n/a");
-                cui_text(ui, eta, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
-                         .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
+            if (!narrow) {
+                cui_table_cell(ui); {
+                    char speed[32];
+                    if (!strcmp(d->status, "active")) fmt_speed(speed, sizeof speed, d->down_speed);
+                    else snprintf(speed, sizeof speed, "n/a");
+                    cui_text(ui, speed, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
+                             .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
+                }
+                cui_table_cell(ui); {
+                    char eta[32];
+                    unsigned long long secs;
+                    if (download_eta(d, &secs)) fmt_eta(eta, sizeof eta, secs);
+                    else snprintf(eta, sizeof eta, "n/a");
+                    cui_text(ui, eta, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
+                             .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
+                }
             }
             cui_table_cell(ui); {
                 if (!strcmp(download_status_label(d), "Metadata")) {
@@ -2008,14 +2151,12 @@ static void statusbar(App *a, cui_ctx *ui) {
     cui_status_bar(ui, "statusbar") {
         cui_status_bar_text(ui, a->status);
         cui_status_bar_spacer(ui);
-        if (mac_chrome(a)) {
-            char down[32], up[32];
-            fmt_speed(down, sizeof down, a->gs.down_speed);
-            fmt_speed(up, sizeof up, a->gs.up_speed);
-            cui_status_bar_text_ex(ui, down,
-                                   &(cui_status_item_opts){.icon = CUI_ICON_ARROW_DOWN});
-            cui_status_bar_text_ex(ui, up, &(cui_status_item_opts){.icon = CUI_ICON_ARROW_UP});
-        }
+        char down[32], up[32];
+        fmt_speed(down, sizeof down, a->gs.down_speed);
+        fmt_speed(up, sizeof up, a->gs.up_speed);
+        cui_status_bar_text_ex(ui, down,
+                               &(cui_status_item_opts){.icon = CUI_ICON_ARROW_DOWN});
+        cui_status_bar_text_ex(ui, up, &(cui_status_item_opts){.icon = CUI_ICON_ARROW_UP});
         cui_status_bar_text(ui, count);
     }
 }
@@ -2344,7 +2485,10 @@ static void settings_dialog(App *a, cui_ctx *ui) {
     static const char *icons[] = {CUI_ICON_SETTINGS, CUI_ICON_SLIDERS_HORIZONTAL,
                                   CUI_ICON_GLOBE, CUI_ICON_PALETTE, CUI_ICON_KEYBOARD,
                                   CUI_ICON_REFRESH_CW};
-    float body_h = cui_viewport_size(ui).y > 760 ? 430 : 300;
+    /* Leave room for the title, tabs and footer so Save stays on screen. */
+    float body_h = cui_viewport_size(ui).y - 210;
+    if (body_h > 430) body_h = 430;
+    if (body_h < 180) body_h = 180;
     cui_dialog(ui, "Settings", &a->show_settings, .width = 680) {
         cui_tabs(ui, "settings-tabs", tabs, 6, &a->settings_tab, .icons = icons);
         if (a->settings_seen_tab != a->settings_tab) {
@@ -2448,7 +2592,7 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                 if (cui_slider(ui, "Upload limit", &upload, 0, 51200, .step = 64,
                                .show_value = true, .format = "%.0f KB/s", .width = CUI_FILL))
                     a->edit.max_upload_limit = (int)upload;
-                cui_muted(ui, "The title bar shows the current transfer rates.");
+                cui_muted(ui, "The status bar shows the current transfer rates.");
             } else if (a->settings_tab == 2) {
                 cui_heading(ui, "Seeding", 4);
                 cui_switch(ui, "Keep seeding after download",
@@ -2464,15 +2608,16 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                               "multiple of the downloaded bytes.");
             } else if (a->settings_tab == 3) {
                 cui_heading(ui, "Typography", 4);
-                static const char *font_opts[] = {"Default", "Sans", "Serif", "Mono"};
-                cui_label(ui, "Font");
-                if (cui_segmented(ui, "font-preset", font_opts, 4, &a->font_pick,
-                                  .size = CUI_SIZE_SM)) {
-                    static const char *font_names[] = {"default", "sans", "serif", "mono"};
-                    snprintf(a->edit.font, sizeof a->edit.font, "%s", font_names[a->font_pick]);
+                if (cui_select_ex(ui, "font-family", (const char *const *)font_names,
+                                  font_name_count, &a->font_pick,
+                                  &(cui_select_opts){.label = "Font",
+                                                     .placeholder = "Default",
+                                                     .searchable = true,
+                                                     .width = CUI_FILL})) {
+                    font_item_value(a->font_pick, a->edit.font, sizeof a->edit.font);
                 }
-                cui_muted(ui, "Default uses the fonts Greed ships with. The others come from "
-                              "your system.");
+                cui_muted(ui, "Pick any font installed on this device. Default uses the "
+                              "fonts Greed ships with.");
                 float text_pct = a->edit.text_scale * 100.0f;
                 if (cui_slider(ui, "Text size", &text_pct, 85, 130, .step = 5,
                                .show_value = true, .format = "%.0f%%", .width = CUI_FILL))
@@ -2485,6 +2630,15 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                     a->edit.spacing = space_values[a->spacing_pick];
                 cui_muted(ui, "Spacing scales buttons, rows and page margins. Changes preview "
                               "instantly; Save keeps them.");
+
+                cui_heading(ui, "Layout", 4);
+                float side = a->edit.sidebar_width > 0
+                                 ? (float)a->edit.sidebar_width
+                                 : (mac_chrome(a) ? 220.0f : 198.0f);
+                if (cui_slider(ui, "Sidebar width", &side, 140, 420, .step = 10,
+                               .show_value = true, .format = "%.0f px", .width = CUI_FILL))
+                    a->edit.sidebar_width = (int)side;
+                cui_muted(ui, "You can also drag the divider beside the sidebar.");
 
                 cui_heading(ui, "Theme", 4);
                 static const char *filters[] = {"All", "Dark", "Light"};
@@ -3467,15 +3621,41 @@ static void frame(cui_ctx *ui, void *user) {
         frame_interactions(a, ui);
         if (!mac) cui_separator(ui);
         cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_STRETCH) {
-            float sw = cui_animate_spring(ui, cui_make_id(ui, "sidebar-width"),
-                                          a->sidebar_open ? (mac ? 220.0f : 198.0f) : 0.0f,
-                                          0.28f, 0.0f);
-            if (sw > 0.5f) sidebar(a, ui, sw);
-            content(a, ui);
-            details(a, ui);
+            float vw = cui_viewport_size(ui).x;
+            float want = sidebar_width(a);
+            float limit = vw - 300.0f; /* keep the content pane usable */
+            if (limit < 140.0f) limit = 140.0f;
+            if (want > limit) want = limit;
+            float open = cui_animate_spring(ui, cui_make_id(ui, "sidebar-open"),
+                                            a->sidebar_open ? 1.0f : 0.0f, 0.28f, 0.0f);
+            float sw = want * open;
+            if (sw > 0.5f) {
+                float ratio = sw / vw;
+                float before = ratio;
+                cui_split_begin(ui, "main-split", &ratio,
+                                &(cui_split_opts){.min_first = 140, .min_second = 300,
+                                                  .max_first = 420});
+                if (ratio != before) {
+                    a->cfg.sidebar_width = (int)(ratio * vw + 0.5f);
+                    a->edit.sidebar_width = a->cfg.sidebar_width;
+                    a->sidebar_dirty = true;
+                }
+                sidebar(a, ui, ratio * vw);
+                cui_split_next(ui);
+                content(a, ui);
+                details(a, ui);
+                cui_split_end(ui);
+            } else {
+                content(a, ui);
+                details(a, ui);
+            }
         }
         if (!mac) cui_separator(ui);
         statusbar(a, ui);
+    }
+    if (a->sidebar_dirty && !cui_mouse_down(ui, CUI_MOUSE_LEFT)) {
+        a->sidebar_dirty = false;
+        if (!config_save(&a->cfg)) set_status(a, "Could not save the sidebar width");
     }
 
     add_dialog(a, ui);
@@ -3540,8 +3720,8 @@ int ui_run(void) {
     int rc = cui_app_run(&(cui_app_desc){.title = "Greed",
                                          .width = 1240,
                                          .height = 780,
-                                         .min_width = 1000,
-                                         .min_height = 620,
+                                         .min_width = 640,
+                                         .min_height = 420,
                                          .theme = CUI_THEME_DARK,
                                          .accent = CUI_ACCENT_VIOLET,
                                          .app_id = "greed"},

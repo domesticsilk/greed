@@ -675,7 +675,7 @@ CUI_API void cui_scroll_show(cui_ctx *ui, const char *scope, const char *scroll_
 
 /* Resizable split view: two panes with a draggable divider. `ratio` is the
  * size of the first pane in 0..1. Call cui_split_next between the panes. */
-typedef struct cui_split_opts { int _; bool vertical; float min_first, min_second; cui_size width, height; } cui_split_opts;
+typedef struct cui_split_opts { int _; bool vertical; float min_first, min_second, max_first; cui_size width, height; } cui_split_opts;
 CUI_API void cui_split_begin(cui_ctx *ui, const char *id, float *ratio, const cui_split_opts *opts);
 CUI_API void cui_split_next(cui_ctx *ui);
 CUI_API void cui_split_end(cui_ctx *ui);

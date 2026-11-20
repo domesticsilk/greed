@@ -13,13 +13,16 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
 
 - **aria2 core**: HTTP/HTTPS/FTP, BitTorrent, Metalink; resume, multi-connection, checksums
 - **Bundled aria2**: `vendor/aria2/` ships with the repo; falls back to a system `aria2c`
-- **Frameless window**: the title bar is drawn inside the app, with drag, minimize, maximize and edge resize
+- **Frameless window**: the title bar is drawn inside the app, with drag, minimize, maximize and
+  edge resize; the window can shrink to 640x420
 - **GUI**: 76 built-in themes (default Dark Mono) plus marketplace theme packs, sidebar tabs
   (All/Active/Waiting/Stopped/Complete), a searchable download table with progress, speed, ETA
-  and status, a per-download details pane and a live transfer sparkline in the sidebar
+  and status, a per-download details pane and a live transfer sparkline in the sidebar. Drag the
+  divider to resize the sidebar from 140 to 420px; transfer speeds also stay in the status bar
 - **Liquid Glass**: an optional marketplace theme, in light and dark, that switches to
-  macOS-style chrome: a unified toolbar, traffic lights, a 220px sidebar, sentence-case headers
-  and optical glass on the toolbar, sidebar and dialog chrome. Other themes keep Greed's chrome
+  macOS-style chrome: a unified toolbar, traffic lights, a resizable sidebar (220px by default),
+  sentence-case headers and optical glass on the toolbar, sidebar and dialog chrome. Other
+  themes keep Greed's chrome
 - **Keyboard first**: a command palette, full list navigation and an optional Vim mode; every
   destructive action asks first
 - **Row actions**: open a finished file, open its folder, copy the source link, or retry a
@@ -37,8 +40,8 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
 - **Statistics**: 60-second throughput chart with peak marker, live download/upload speeds and a
   download-folder card with free space and an Open folder button
 - **Scheduled downloads**: presets or an exact date and time; Greed hands the link to aria2 when it is due
-- **Settings**: General, Bandwidth, Torrents, Appearance, Keys and Updates tabs; theme, font
-  family, text size, spacing, motion, engine limits and a keymap diagram
+- **Settings**: General, Bandwidth, Torrents, Appearance, Keys and Updates tabs; theme, any
+  installed font, text size, sidebar width, spacing, motion, engine limits and a keymap diagram
 - **In-app updates**: Settings → Updates checks the latest GitHub release, downloads the
   AppImage and replaces the running copy (or installs it to `~/.local/bin/greed`), then offers
   a restart
@@ -192,6 +195,7 @@ palette.
   "verify_after_complete": true,
   "theme": "Dark Mono",
   "font": "default",
+  "sidebar_width": 0,
   "text_scale": 1.0,
   "spacing": 1.0,
   "motion_speed": 1.0,
@@ -199,8 +203,11 @@ palette.
 }
 ```
 
-`font` is one of `default`, `sans`, `serif` or `mono`; `text_scale` ranges from 0.85 to 1.3 and
-`spacing` from 0.9 to 1.12. The same values can be changed in Settings > Appearance.
+`font` is a preset (`default`, `sans`, `serif`, `mono`) or any font family installed on the
+device; `sidebar_width` is in pixels from 140 to 420, where 0 uses the theme default (198, or
+220 with macOS chrome). `text_scale` ranges from 0.85 to 1.3 and `spacing` from 0.9 to 1.12.
+The same values can be changed in Settings > Appearance, where the font list is searchable and
+the sidebar width also has a slider.
 
 The limits are in KB/s; 0 means unlimited. The aria2 session is saved next to it as
 `aria2.session`. The same directory and format are used by the earlier Rust version.
