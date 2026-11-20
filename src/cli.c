@@ -3,6 +3,7 @@
 #include "config.h"
 #include "model.h"
 #include "rpc.h"
+#include "version.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -278,7 +279,7 @@ int cli_run(const char *cmd, int argc, char **argv) {
     Config cfg;
     config_load(&cfg);
     if (!strcmp(cmd, "version")) {
-        printf("greed 0.1.0\n");
+        printf("greed " GREED_VERSION "\n");
         return 0;
     }
     if (!ensure_client(&cfg)) return 1;

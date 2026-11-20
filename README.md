@@ -34,8 +34,11 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
 - **Statistics**: 60-second throughput chart with peak marker, live download/upload speeds and a
   download-folder card with free space and an Open folder button
 - **Scheduled downloads**: presets or an exact date and time; Greed hands the link to aria2 when it is due
-- **Settings**: General, Bandwidth, Torrents, Appearance and Keys tabs; theme, font family,
-  text size, spacing, motion, engine limits and a keymap diagram
+- **Settings**: General, Bandwidth, Torrents, Appearance, Keys and Updates tabs; theme, font
+  family, text size, spacing, motion, engine limits and a keymap diagram
+- **In-app updates**: Settings → Updates checks the latest GitHub release, downloads the
+  AppImage and replaces the running copy (or installs it to `~/.local/bin/greed`), then offers
+  a restart
 - **Accessibility**: text meets WCAG AA on every theme surface, focus rings keep 3:1
   non-text contrast, and the whole app works from the keyboard
 - **Clipboard monitoring**: offers a toast when a link is copied (toggleable)
@@ -86,6 +89,10 @@ static library, so later rebuilds only touch the app sources.
 It writes `build/Greed-x86_64.AppImage` (about 3.4 MB) with the private aria2 library
 inside, so the release runs on a machine with no aria2 installed. The first run downloads
 `appimagetool` into `build/`; when FUSE is unavailable the script falls back to extracting it.
+
+Publish that file as the `Greed-x86_64.AppImage` asset of a GitHub release. Settings → Updates
+looks for that exact name and compares the release tag with `GREED_VERSION` in
+`src/version.h`.
 
 ## Usage
 

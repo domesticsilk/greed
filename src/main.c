@@ -1,5 +1,6 @@
 #include "cli.h"
 #include "ui.h"
+#include "version.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -46,7 +47,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(cmd, "version") || !strcmp(cmd, "--version") || !strcmp(cmd, "-V")) {
-        printf("greed 0.1.0\n");
+        printf("greed " GREED_VERSION "\n");
         return 0;
     }
     return cli_run(cmd, argc - 2, argv + 2);

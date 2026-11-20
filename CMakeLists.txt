@@ -28,6 +28,7 @@ add_executable(greed
     src/config.c
     src/checksum.c
     src/theme.c
+    src/update.c
     src/x11.c
 )
 target_include_directories(greed PRIVATE src vendor/cui)

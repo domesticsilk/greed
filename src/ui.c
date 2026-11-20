@@ -6,6 +6,8 @@
 #include "model.h"
 #include "rpc.h"
 #include "theme.h"
+#include "update.h"
+#include "version.h"
 #include "x11.h"
 
 #include "cui.h"
@@ -106,6 +108,8 @@ typedef struct {
     cui_id menu_anchor;
     bool show_add;
     bool show_settings;
+    GreedUpdate upd;
+    char restart[PATH_MAX];
     bool show_info;
     bool details_open;
     char info_gid[32];
@@ -2056,14 +2060,83 @@ static void keys_tab(App *a, cui_ctx *ui) {
     cui_muted(ui, "Every action here also lives in the command palette.");
 }
 
+static void updates_tab(App *a, cui_ctx *ui) {
+    GreedUpdateView v;
+    update_snapshot(&a->upd, &v);
+    if (v.stage == UPD_IDLE) {
+        update_check(&a->upd);
+        cui_request_wakeup(ui, 0.1f);
+        update_snapshot(&a->upd, &v);
+    }
+    bool busy = v.stage == UPD_CHECKING || v.stage == UPD_DOWNLOADING;
+    if (busy) cui_request_wakeup(ui, 0.2f);
+
+    cui_heading(ui, "Version", 4);
+    cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER, .gap = 8) {
+        cui_text(ui, "Greed " GREED_VERSION, .size = 14, .font = CUI_FONT_MEDIUM);
+        cui_spacer(ui);
+        if (cui_button(ui, "Check for updates", .icon = CUI_ICON_REFRESH_CW,
+                       .size = CUI_SIZE_SM, .disabled = busy || v.stage == UPD_INSTALLED)) {
+            update_check(&a->upd);
+            cui_request_wakeup(ui, 0.1f);
+        }
+    }
+
+    if (v.stage == UPD_CHECKING) {
+        cui_muted(ui, "Checking GitHub for the latest release…");
+        cui_progress(ui, 0, .indeterminate = true, .height = 4, .width = CUI_FILL);
+    } else if (v.stage == UPD_CURRENT) {
+        cui_text(ui, "Greed is up to date.", .size = 13, .color = CUI_COLOR_SUCCESS);
+    } else if (v.stage == UPD_AVAILABLE) {
+        char line[96];
+        snprintf(line, sizeof line, "Greed %s is available.", v.version);
+        cui_text(ui, line, .size = 13);
+        if (cui_button(ui, "Download and install", .icon = CUI_ICON_DOWNLOAD,
+                       .variant = CUI_BUTTON_PRIMARY)) {
+            update_download(&a->upd);
+            cui_request_wakeup(ui, 0.1f);
+        }
+    } else if (v.stage == UPD_DOWNLOADING) {
+        cui_progress(ui, v.progress, .height = 8, .show_value = true, .width = CUI_FILL);
+        cui_muted(ui, "Downloading the update…");
+    } else if (v.stage == UPD_INSTALLED) {
+        char line[96];
+        snprintf(line, sizeof line, "Greed %s is installed.", v.version);
+        cui_text(ui, line, .size = 13, .color = CUI_COLOR_SUCCESS);
+        if (cui_button(ui, "Restart Greed", .icon = CUI_ICON_REFRESH_CW,
+                       .variant = CUI_BUTTON_PRIMARY)) {
+            snprintf(a->restart, sizeof a->restart, "%s", v.target);
+            cui_app_quit(NULL);
+        }
+        cui_muted(ui, "Restart to run the new version.");
+    } else if (v.stage == UPD_ERROR) {
+        cui_text(ui, v.error, .size = 12, .color = CUI_COLOR_DANGER);
+    }
+
+    if (v.stage == UPD_AVAILABLE || v.stage == UPD_DOWNLOADING || v.stage == UPD_INSTALLED) {
+        if (v.appimage) {
+            cui_muted(ui, "Updates replace the running AppImage in place.");
+        } else if (v.target[0]) {
+            char note[PATH_MAX + 64];
+            snprintf(note, sizeof note, "%s to %s.",
+                     v.stage == UPD_INSTALLED ? "Installed" : "Installs", v.target);
+            cui_muted(ui, note);
+        } else {
+            cui_muted(ui, "Set HOME to choose where the update is installed.");
+        }
+    }
+}
+
 static void settings_dialog(App *a, cui_ctx *ui) {
     if (!a->show_settings) return;
-    static const char *tabs[] = {"General", "Bandwidth", "Torrents", "Appearance", "Keys"};
+    static const char *tabs[] = {"General", "Bandwidth", "Torrents", "Appearance", "Keys",
+                                 "Updates"};
     static const char *icons[] = {CUI_ICON_SETTINGS, CUI_ICON_SLIDERS_HORIZONTAL,
-                                  CUI_ICON_GLOBE, CUI_ICON_PALETTE, CUI_ICON_KEYBOARD};
+                                  CUI_ICON_GLOBE, CUI_ICON_PALETTE, CUI_ICON_KEYBOARD,
+                                  CUI_ICON_REFRESH_CW};
     float body_h = cui_viewport_size(ui).y > 760 ? 430 : 300;
     cui_dialog(ui, "Settings", &a->show_settings, .width = 680) {
-        cui_tabs(ui, "settings-tabs", tabs, 5, &a->settings_tab, .icons = icons);
+        cui_tabs(ui, "settings-tabs", tabs, 6, &a->settings_tab, .icons = icons);
         if (a->settings_seen_tab != a->settings_tab) {
             cui_scroll_to(ui, "settings-body", 0);
             a->settings_seen_tab = a->settings_tab;
@@ -2235,8 +2308,10 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                         }
                     }
                 }
-            } else {
+            } else if (a->settings_tab == 4) {
                 keys_tab(a, ui);
+            } else {
+                updates_tab(a, ui);
             }
         }
         cui_dialog_footer(ui) {
@@ -2971,6 +3046,7 @@ int ui_run(void) {
     snprintf(a->add_dir, sizeof a->add_dir, "%s", cfg.download_dir);
     snprintf(a->status, sizeof a->status, "Ready");
     rpc_init(&a->rpc, cfg.rpc_port);
+    update_init(&a->upd);
     a->sched_count = config_schedules_load(a->sched, GREED_MAX_SCHEDULED);
 
     /* Test hook for screenshots: GREED_DEMO=add|settings|settings-bandwidth|settings-torrents|details|stats|empty */
@@ -2989,6 +3065,9 @@ int ui_run(void) {
     } else if (demo && !strcmp(demo, "settings-keys")) {
         open_settings(a);
         a->settings_tab = 4;
+    } else if (demo && !strcmp(demo, "settings-updates")) {
+        open_settings(a);
+        a->settings_tab = 5;
     } else if (demo && !strcmp(demo, "palette")) a->show_palette = true;
     else if (demo && !strcmp(demo, "details")) a->demo_details = true;
     else if (demo && !strcmp(demo, "stats")) a->view = VIEW_STATS;
@@ -3011,6 +3090,9 @@ int ui_run(void) {
     frame_shutdown(&a->frame);
     free(a->items);
     free(a->known);
+    char restart[PATH_MAX];
+    snprintf(restart, sizeof restart, "%s", a->restart);
     free(a);
+    if (restart[0]) execl(restart, restart, (char *)NULL);
     return rc;
 }
