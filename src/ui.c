@@ -103,14 +103,17 @@ typedef struct {
     bool fonts_ready;
     bool font_failed[3];
     int font_applied;
+    int font_mac_state;
     cui_font font_default[3];
     cui_font font_user[3][3];
+    cui_font font_mac[3];
     int pending_key;
     double pending_at;
     cui_id menu_anchor;
     bool show_add;
     bool show_settings;
     bool show_market;
+    bool traffic_hover[3];
     char market_query[64];
     int market_cat;
     int market_seen_job;
@@ -188,9 +191,52 @@ static int spacing_index(float v) {
     return 1;
 }
 
+static const GreedTheme *active_theme(App *a) {
+    return greed_theme_find(active_cfg(a)->theme);
+}
+
+static bool mac_chrome(App *a) { return greed_theme_macos(active_theme(a)); }
+
+static bool mac_glass(App *a) {
+    const GreedTheme *t = active_theme(a);
+    return greed_theme_macos(t) && t->material == GREED_MATERIAL_GLASS;
+}
+
 static void apply_theme(cui_ctx *ui, App *a) {
     Config *c = active_cfg(a);
     greed_theme_apply(ui, greed_theme_find(c->theme), c->motion_speed, c->text_scale, c->spacing);
+}
+
+static void apply_theme_name(App *a, const char *name) {
+    snprintf(a->cfg.theme, sizeof a->cfg.theme, "%s", name);
+    snprintf(a->edit.theme, sizeof a->edit.theme, "%s", name);
+    a->font_applied = -1; /* the chrome may swap the font roles */
+    if (config_save(&a->cfg)) set_status(a, "Applied %s", name);
+    else set_status(a, "Applied %s, but could not save it", name);
+}
+
+typedef struct {
+    cui_color top, bottom, line;
+} GlassPaint;
+
+static void paint_glass(cui_ctx *ui, cui_rect r, void *user) {
+    GlassPaint *g = user;
+    if (r.w <= 0 || r.h <= 0) return;
+    cui_draw_rect_gradient(ui, r, CUI_CORNERS(0), g->top, g->bottom);
+    if (g->line.a > 0)
+        cui_draw_rect(ui, (cui_rect){r.x, r.y, r.w, 1}, CUI_CORNERS(0), g->line);
+}
+
+static GlassPaint glass_fill(App *a, cui_ctx *ui) {
+    const GreedTheme *t = active_theme(a);
+    cui_color surface = cui_color_of(ui, CUI_COLOR_SURFACE);
+    GlassPaint g = {surface, surface, {0, 0, 0, 0}};
+    if (t->material != GREED_MATERIAL_GLASS) return g;
+    cui_color base = cui_mix(surface, CUI_RGB(t->glass_tint), t->glass_tint_alpha);
+    g.top = cui_mix(base, CUI_RGB(t->glass_highlight), t->glass_highlight_alpha * 0.35f);
+    g.bottom = base;
+    g.line = cui_alpha(CUI_RGB(t->glass_highlight), t->glass_highlight_alpha * 0.9f);
+    return g;
 }
 
 /* fc-match is the only portable way to find a family's file on Linux. */
@@ -221,12 +267,36 @@ static void apply_typography(App *a, cui_ctx *ui) {
     }
     Config *c = active_cfg(a);
     int pick = font_index(c->font);
-    if (pick == a->font_applied) return;
+    /* macOS chrome prefers San Francisco, then Inter; never bundles a font. */
+    bool mac = pick == 0 && mac_chrome(a);
+    int key = pick + (mac ? 10 : 0);
+    if (key == a->font_applied) return;
+    if (mac) {
+        if (!a->font_mac_state) {
+            static const char *first[3] = {"SF Pro Text", "SF Pro Text:weight=medium",
+                                           "SF Pro Display"};
+            static const char *second[3] = {"Inter", "Inter:weight=medium", "Inter"};
+            bool ok = true;
+            for (int r = 0; r < 3; r++) {
+                cui_font f = load_font_query(ui, first[r]);
+                if (f < 0) f = load_font_query(ui, second[r]);
+                a->font_mac[r] = f;
+                if (f < 0) ok = false;
+                else cui_font_add_fallback(ui, f, a->font_default[r]);
+            }
+            a->font_mac_state = ok ? 1 : 2;
+        }
+        for (int r = 0; r < 3; r++)
+            cui_font_set_role(ui, (cui_font)r,
+                              a->font_mac_state == 1 ? a->font_mac[r] : a->font_default[r]);
+        a->font_applied = key;
+        return;
+    }
     if (pick == 0) {
         cui_font_set_role(ui, CUI_FONT_BODY, a->font_default[0]);
         cui_font_set_role(ui, CUI_FONT_MEDIUM, a->font_default[1]);
         cui_font_set_role(ui, CUI_FONT_DISPLAY, a->font_default[2]);
-        a->font_applied = pick;
+        a->font_applied = key;
         return;
     }
     static const char *families[] = {"sans-serif", "serif", "monospace"};
@@ -942,7 +1012,80 @@ static cui_texture logo_texture(cui_ctx *ui) {
     return tex;
 }
 
+typedef struct {
+    cui_color fill;
+    const char *glyph;
+    bool hover;
+} TrafficPaint;
+
+static void paint_traffic(cui_ctx *ui, cui_rect r, void *user) {
+    TrafficPaint *t = user;
+    cui_draw_circle(ui, (cui_vec2){r.x + r.w * 0.5f, r.y + r.h * 0.5f}, 6, t->fill);
+    if (t->hover)
+        cui_draw_icon(ui, t->glyph, r, 9, cui_alpha(CUI_RGB(0x000000), 0.55f));
+}
+
+/* The canvas paints the 12 px dot; a transparent button on top owns focus,
+ * click and tooltip. Hover is one frame behind, which is invisible. */
+static bool traffic_light(App *a, cui_ctx *ui, int slot, const char *tooltip, cui_color fill,
+                          const char *glyph) {
+    TrafficPaint tp = {fill, glyph, a->traffic_hover[slot]};
+    bool clicked = false;
+    cui_box(ui, .dir = CUI_STACK, .width = CUI_PX(20), .height = CUI_PX(28)) {
+        cui_canvas(ui, tooltip, CUI_FILL, CUI_FILL, paint_traffic, &tp, sizeof tp);
+        clicked = cui_icon_button_ex(ui, CUI_ICON_CIRCLE,
+                                     &(cui_button_opts){.size = CUI_SIZE_SM,
+                                                        .width = CUI_PX(20),
+                                                        .variant = CUI_BUTTON_GHOST,
+                                                        .tooltip = tooltip,
+                                                        .color = (cui_color){1, 1, 1, 0}});
+        a->traffic_hover[slot] = cui_last_hovered(ui);
+    }
+    return clicked;
+}
+
+static void mac_titlebar(App *a, cui_ctx *ui) {
+    GlassPaint g = glass_fill(a, ui);
+    bool maximized = frame_is_maximized(&a->frame);
+    cui_box(ui, .dir = CUI_STACK, .width = CUI_FILL, .height = CUI_PX(52)) {
+        cui_canvas(ui, "toolbar-glass", CUI_FILL, CUI_FILL, paint_glass, &g, sizeof g);
+        cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .pad_x = 12, .gap = 8,
+                .align = CUI_ALIGN_CENTER) {
+            if (traffic_light(a, ui, 0, "Close", CUI_RGB(0xFF5F57), CUI_ICON_X))
+                cui_app_quit(NULL);
+            if (traffic_light(a, ui, 1, "Minimize", CUI_RGB(0xFEBC2E), CUI_ICON_MINUS))
+                frame_minimize(&a->frame);
+            if (traffic_light(a, ui, 2, maximized ? "Restore" : "Maximize", CUI_RGB(0x28C840),
+                              maximized ? CUI_ICON_MINIMIZE_2 : CUI_ICON_MAXIMIZE_2))
+                frame_toggle_maximize(&a->frame);
+            cui_gap(ui, 4);
+            if (cui_icon_button(ui, CUI_ICON_PANEL_LEFT, .size = CUI_SIZE_SM,
+                                .tooltip = a->sidebar_open ? "Hide sidebar" : "Show sidebar"))
+                a->sidebar_open = !a->sidebar_open;
+            cui_row(ui, .id = "dragzone", .width = CUI_FILL, .height = CUI_FILL, .gap = 8,
+                    .align = CUI_ALIGN_CENTER) {
+                cui_text(ui, "Greed", .font = CUI_FONT_MEDIUM, .size = 13);
+            }
+            if (cui_button(ui, "Add", .icon = CUI_ICON_PLUS, .variant = CUI_BUTTON_PRIMARY,
+                           .size = CUI_SIZE_SM))
+                open_add(a);
+            if (cui_icon_button(ui, CUI_ICON_COMMAND, .size = CUI_SIZE_SM,
+                                .tooltip = "Commands (Ctrl K)"))
+                a->show_palette = true;
+            if (cui_icon_button(ui, CUI_ICON_SHOPPING_CART, .size = CUI_SIZE_SM,
+                                .tooltip = "Marketplace"))
+                open_market(a);
+            if (cui_icon_button(ui, CUI_ICON_SETTINGS, .size = CUI_SIZE_SM, .tooltip = "Settings"))
+                open_settings(a);
+        }
+    }
+}
+
 static void titlebar(App *a, cui_ctx *ui) {
+    if (mac_chrome(a)) {
+        mac_titlebar(a, ui);
+        return;
+    }
     char down[32], up[32];
     fmt_speed(down, sizeof down, a->gs.down_speed);
     fmt_speed(up, sizeof up, a->gs.up_speed);
@@ -1024,70 +1167,79 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
     for (int i = 0; i < a->count; i++)
         for (int t = 0; t < TAB_COUNT; t++)
             if (tab_matches(t, &a->items[i])) counts[t]++;
+    bool mac = mac_chrome(a);
+    bool glass = mac_glass(a);
+    GlassPaint g = glass_fill(a, ui);
     /* Fade with the width so the clipped labels do not flash while collapsing. */
-    float opacity = width / 198.0f;
+    float opacity = width / (mac ? 220.0f : 198.0f);
     if (opacity > 1.0f) opacity = 1.0f;
     if (opacity < 0.05f) opacity = 0.05f;
 
-    cui_column(ui, .width = CUI_PX(width), .height = CUI_FILL, .bg = CUI_COLOR_SURFACE,
-               .pad = 10 * active_cfg(a)->spacing, .gap = 2, .clip = true, .opacity = opacity) {
-        cui_nav_section(ui, "LIBRARY");
-        for (int t = 0; t < TAB_COUNT; t++) {
-            char badge[16] = {0};
-            if (counts[t] > 0) snprintf(badge, sizeof badge, "%d", counts[t]);
-            if (cui_nav_item(ui, tab_names[t], .icon = tab_icons[t],
-                             .badge = badge[0] ? badge : NULL,
-                             .selected = a->view == VIEW_DOWNLOADS && a->tab == t,
-                             .group = "tabs")) {
-                a->tab = t;
-                a->view = VIEW_DOWNLOADS;
+    cui_box(ui, .dir = CUI_STACK, .width = CUI_PX(width), .height = CUI_FILL,
+            .opacity = opacity) {
+        if (glass)
+            cui_canvas(ui, "sidebar-glass", CUI_FILL, CUI_FILL, paint_glass, &g, sizeof g);
+        cui_column(ui, .width = CUI_FILL, .height = CUI_FILL,
+                   .bg = glass ? (cui_color){0, 0, 0, 0} : CUI_COLOR_SURFACE,
+                   .pad = (mac ? 12 : 10) * active_cfg(a)->spacing, .gap = 2, .clip = true) {
+            cui_nav_section(ui, mac ? "Library" : "LIBRARY");
+            for (int t = 0; t < TAB_COUNT; t++) {
+                char badge[16] = {0};
+                if (counts[t] > 0) snprintf(badge, sizeof badge, "%d", counts[t]);
+                if (cui_nav_item(ui, tab_names[t], .icon = tab_icons[t],
+                                 .badge = badge[0] ? badge : NULL,
+                                 .selected = a->view == VIEW_DOWNLOADS && a->tab == t,
+                                 .group = "tabs")) {
+                    a->tab = t;
+                    a->view = VIEW_DOWNLOADS;
+                }
             }
-        }
-        char sched_badge[16] = {0};
-        if (a->sched_count) snprintf(sched_badge, sizeof sched_badge, "%d", a->sched_count);
-        if (cui_nav_item(ui, "Scheduled", .icon = CUI_ICON_CALENDAR,
-                         .badge = sched_badge[0] ? sched_badge : NULL,
-                         .selected = a->view == VIEW_SCHEDULED, .group = "tabs"))
-            a->view = VIEW_SCHEDULED;
-        cui_box(ui, .height = CUI_PX(14)) {}
-        cui_separator(ui);
-        cui_nav_section(ui, "INSIGHTS");
-        if (cui_nav_item(ui, "Statistics", .icon = CUI_ICON_CHART_LINE,
-                         .selected = a->view == VIEW_STATS, .group = "tabs"))
-            a->view = VIEW_STATS;
-        cui_box(ui, .height = CUI_PX(14)) {}
-        cui_separator(ui);
-        cui_nav_section(ui, "TRANSFER");
-        char num[32];
-        cui_row(ui, .width = CUI_FILL) {
-            cui_text(ui, "Active", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
+            char sched_badge[16] = {0};
+            if (a->sched_count) snprintf(sched_badge, sizeof sched_badge, "%d", a->sched_count);
+            if (cui_nav_item(ui, "Scheduled", .icon = CUI_ICON_CALENDAR,
+                             .badge = sched_badge[0] ? sched_badge : NULL,
+                             .selected = a->view == VIEW_SCHEDULED, .group = "tabs"))
+                a->view = VIEW_SCHEDULED;
+            cui_box(ui, .height = CUI_PX(14)) {}
+            cui_separator(ui);
+            cui_nav_section(ui, mac ? "Insights" : "INSIGHTS");
+            if (cui_nav_item(ui, "Statistics", .icon = CUI_ICON_CHART_LINE,
+                             .selected = a->view == VIEW_STATS, .group = "tabs"))
+                a->view = VIEW_STATS;
+            cui_box(ui, .height = CUI_PX(14)) {}
+            cui_separator(ui);
+            cui_nav_section(ui, mac ? "Transfer" : "TRANSFER");
+            char num[32];
+            cui_row(ui, .width = CUI_FILL) {
+                cui_text(ui, "Active", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
+                cui_spacer(ui);
+                snprintf(num, sizeof num, "%llu", a->gs.active);
+                cui_text(ui, num, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY, .tabular = true);
+            }
+            cui_row(ui, .width = CUI_FILL) {
+                cui_text(ui, "Queued", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
+                cui_spacer(ui);
+                snprintf(num, sizeof num, "%llu", a->gs.waiting);
+                cui_text(ui, num, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY, .tabular = true);
+            }
             cui_spacer(ui);
-            snprintf(num, sizeof num, "%llu", a->gs.active);
-            cui_text(ui, num, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY, .tabular = true);
-        }
-        cui_row(ui, .width = CUI_FILL) {
-            cui_text(ui, "Queued", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
-            cui_spacer(ui);
-            snprintf(num, sizeof num, "%llu", a->gs.waiting);
-            cui_text(ui, num, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY, .tabular = true);
-        }
-        cui_spacer(ui);
-        cui_separator(ui);
-        /* Solid status pill; the fill itself fades when the engine comes or goes. */
-        float dt = cui_delta_time(ui);
-        float speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
-        float step = 1.0f - expf(-dt * 10.0f * speed);
-        a->conn_fade += ((a->connected ? 1.0f : 0.0f) - a->conn_fade) * step;
-        cui_color engine_bg = cui_mix(cui_color_of(ui, CUI_COLOR_DANGER),
-                                      cui_color_of(ui, CUI_COLOR_SUCCESS), a->conn_fade);
-        engine_bg = cui_mix(engine_bg, cui_color_of(ui, CUI_COLOR_SURFACE), 0.18f);
-        if (cui_button(ui, a->connected ? "aria2 connected" : "aria2 offline",
-                       .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM, .full_width = true,
-                       .background = engine_bg, .color = CUI_COLOR_BACKGROUND)) {
-            if (!a->connected && a->cfg.auto_start_aria2)
-                aria2_ensure_running(&a->cfg, true);
-            a->last_poll = 0;
-            set_status(a, a->connected ? "Connection refreshed" : "Reconnecting to aria2…");
+            cui_separator(ui);
+            /* Solid status pill; the fill itself fades when the engine comes or goes. */
+            float dt = cui_delta_time(ui);
+            float speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
+            float step = 1.0f - expf(-dt * 10.0f * speed);
+            a->conn_fade += ((a->connected ? 1.0f : 0.0f) - a->conn_fade) * step;
+            cui_color engine_bg = cui_mix(cui_color_of(ui, CUI_COLOR_DANGER),
+                                          cui_color_of(ui, CUI_COLOR_SUCCESS), a->conn_fade);
+            engine_bg = cui_mix(engine_bg, cui_color_of(ui, CUI_COLOR_SURFACE), 0.18f);
+            if (cui_button(ui, a->connected ? "aria2 connected" : "aria2 offline",
+                           .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM, .full_width = true,
+                           .background = engine_bg, .color = CUI_COLOR_BACKGROUND)) {
+                if (!a->connected && a->cfg.auto_start_aria2)
+                    aria2_ensure_running(&a->cfg, true);
+                a->last_poll = 0;
+                set_status(a, a->connected ? "Connection refreshed" : "Reconnecting to aria2…");
+            }
         }
     }
 }
@@ -1300,13 +1452,14 @@ static void download_table(App *a, cui_ctx *ui) {
 
     /* Text scale grows the fixed columns only partly so long names keep room. */
     float col_scale = 1.0f + (active_cfg(a)->text_scale - 1.0f) * 0.6f;
+    bool mac = mac_chrome(a);
     cui_table_column cols[] = {
-        {"NAME", CUI_FILL, CUI_TEXT_START, false},
-        {"SIZE", CUI_PX(80 * col_scale), CUI_TEXT_RIGHT, false},
-        {"PROGRESS", CUI_PX(150 * col_scale), CUI_TEXT_START, false},
-        {"SPEED", CUI_PX(92 * col_scale), CUI_TEXT_RIGHT, false},
-        {"ETA", CUI_PX(64 * col_scale), CUI_TEXT_RIGHT, false},
-        {"STATUS", CUI_PX(104 * col_scale), CUI_TEXT_START, false},
+        {mac ? "Name" : "NAME", CUI_FILL, CUI_TEXT_START, false},
+        {mac ? "Size" : "SIZE", CUI_PX(80 * col_scale), CUI_TEXT_RIGHT, false},
+        {mac ? "Progress" : "PROGRESS", CUI_PX(150 * col_scale), CUI_TEXT_START, false},
+        {mac ? "Speed" : "SPEED", CUI_PX(92 * col_scale), CUI_TEXT_RIGHT, false},
+        {mac ? "ETA" : "ETA", CUI_PX(64 * col_scale), CUI_TEXT_RIGHT, false},
+        {mac ? "Status" : "STATUS", CUI_PX(104 * col_scale), CUI_TEXT_START, false},
     };
     double speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
     float step = 1.0f - expf(-cui_delta_time(ui) * 12.0f * speed);
@@ -1855,6 +2008,14 @@ static void statusbar(App *a, cui_ctx *ui) {
     cui_status_bar(ui, "statusbar") {
         cui_status_bar_text(ui, a->status);
         cui_status_bar_spacer(ui);
+        if (mac_chrome(a)) {
+            char down[32], up[32];
+            fmt_speed(down, sizeof down, a->gs.down_speed);
+            fmt_speed(up, sizeof up, a->gs.up_speed);
+            cui_status_bar_text_ex(ui, down,
+                                   &(cui_status_item_opts){.icon = CUI_ICON_ARROW_DOWN});
+            cui_status_bar_text_ex(ui, up, &(cui_status_item_opts){.icon = CUI_ICON_ARROW_UP});
+        }
         cui_status_bar_text(ui, count);
     }
 }
@@ -2398,6 +2559,8 @@ static void market_card(App *a, cui_ctx *ui, const MarketItem *it, int index, bo
     char ver[64] = {0};
     bool installed = market_installed_version(&a->mkt, it->id, ver, sizeof ver);
     bool current = installed && !strcmp(ver, it->version);
+    bool theme = it->kind == MKT_THEME;
+    bool applied = theme && !strcmp(a->cfg.theme, it->name);
     bool downloading = a->mkt.job_item == index && a->mkt.job_stage == MKT_JOB_DOWNLOADING;
     bool failed = a->mkt.job_item == index && a->mkt.job_stage == MKT_JOB_ERROR;
     char size[32] = {0};
@@ -2431,7 +2594,10 @@ static void market_card(App *a, cui_ctx *ui, const MarketItem *it, int index, bo
                     if (featured)
                         cui_badge(ui, "Featured", .tone = CUI_TONE_ACCENT,
                                   .size = CUI_SIZE_SM);
-                    if (current)
+                    if (applied)
+                        cui_badge(ui, "Applied", .tone = CUI_TONE_SUCCESS,
+                                  .size = CUI_SIZE_SM);
+                    else if (current)
                         cui_badge(ui, "Installed", .tone = CUI_TONE_SUCCESS,
                                   .size = CUI_SIZE_SM);
                     else if (installed)
@@ -2470,9 +2636,20 @@ static void market_card(App *a, cui_ctx *ui, const MarketItem *it, int index, bo
                 if (!current && cui_button(ui, "Update", .size = CUI_SIZE_SM,
                                            .variant = CUI_BUTTON_PRIMARY))
                     market_install(&a->market, index);
+                if (theme && current && !applied &&
+                    cui_button(ui, "Apply", .size = CUI_SIZE_SM,
+                               .variant = CUI_BUTTON_SECONDARY))
+                    apply_theme_name(a, it->name);
                 if (cui_button(ui, "Remove", .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST) &&
-                    market_remove(&a->market, index))
-                    set_status(a, "Removed %s", it->name);
+                    market_remove(&a->market, index)) {
+                    if (theme && !strcmp(a->cfg.theme, it->name)) {
+                        apply_theme_name(a, greed_themes[0].name);
+                        set_status(a, "Removed %s; switched to %s", it->name,
+                                   greed_themes[0].name);
+                    } else {
+                        set_status(a, "Removed %s", it->name);
+                    }
+                }
             }
         }
     }
@@ -3206,6 +3383,7 @@ static void frame(cui_ctx *ui, void *user) {
     App *a = user;
     apply_theme(ui, a);
     apply_typography(a, ui);
+    bool mac = mac_chrome(a);
 
     /* At the root, overlay coordinates are window coordinates, matching the cursor. */
     if (a->drag_active && a->drag_moved) {
@@ -3287,15 +3465,16 @@ static void frame(cui_ctx *ui, void *user) {
     cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .bg = CUI_COLOR_BACKGROUND) {
         titlebar(a, ui);
         frame_interactions(a, ui);
-        cui_separator(ui);
+        if (!mac) cui_separator(ui);
         cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_STRETCH) {
             float sw = cui_animate_spring(ui, cui_make_id(ui, "sidebar-width"),
-                                          a->sidebar_open ? 198.0f : 0.0f, 0.28f, 0.0f);
+                                          a->sidebar_open ? (mac ? 220.0f : 198.0f) : 0.0f,
+                                          0.28f, 0.0f);
             if (sw > 0.5f) sidebar(a, ui, sw);
             content(a, ui);
             details(a, ui);
         }
-        cui_separator(ui);
+        if (!mac) cui_separator(ui);
         statusbar(a, ui);
     }
 

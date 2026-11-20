@@ -1,0 +1,35 @@
+{
+  "name": "Liquid Glass",
+  "dark": false,
+  "chrome": "macos",
+  "material": "glass",
+  "bg": "#ffffff",
+  "surface": "#eceef2",
+  "raised": "#ffffff",
+  "muted": "#e4e7ec",
+  "text": "#1d1d1f",
+  "dim": "#5f6368",
+  "border": "#d2d7de",
+  "accent": "#0066cc",
+  "accent_strong": "#0057b8",
+  "accent_fg": "#ffffff",
+  "danger": "#c4001d",
+  "success": "#1b6e2e",
+  "warning": "#8a4b00",
+  "info": "#0b6bb5",
+  "series": [
+    "#0066cc",
+    "#0f7c8c",
+    "#1b6e2e",
+    "#b35c00",
+    "#6b4cc4",
+    "#c4001d"
+  ],
+  "glass": {
+    "tint": "#ffffff",
+    "tint_alpha": 0.62,
+    "highlight": "#ffffff",
+    "highlight_alpha": 0.55,
+    "shadow_alpha": 0.10
+  }
+}

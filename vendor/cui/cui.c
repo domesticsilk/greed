@@ -150,7 +150,7 @@ float cui__tween(cui_ctx *ui, float *x, float target, float duration);   /* expo
 #define CUI__ENTER_SCALE 0.96f   /* floating layers grow from here */
 #define CUI__PRESS       0.97f   /* buttons, chips, tiles */
 #define CUI__PRESS_WIDE  0.98f   /* rows and cards: wide targets travel further at the same scale */
-#define CUI__DISABLED    0.72f   /* opacity of anything disabled; 0.72 keeps text at 3:1 on every theme */
+#define CUI__DISABLED    0.80f   /* opacity of anything disabled; 0.80 keeps text at 3:1 on every theme */
 /* Radius steps derived from the theme, so a custom scale carries everywhere */
 #define CUI__R_ITEM(ui)    CUI_MAX(6.0f, (ui)->theme.radius_panel - 6.0f)   /* rows inside a panel */
 #define CUI__R_CONTROL(ui, h) CUI_MIN((ui)->theme.radius_control, (h) * 0.5f)

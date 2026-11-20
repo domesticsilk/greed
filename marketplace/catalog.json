@@ -149,6 +149,48 @@
         "accent": "#a78bfa",
         "text": "#ece7f7"
       }
+    },
+    {
+      "id": "liquid-glass",
+      "type": "theme",
+      "name": "Liquid Glass",
+      "category": "Theme",
+      "version": "1.0.0",
+      "summary": "A bright glass theme with macOS window chrome.",
+      "description": "A bright glass theme with macOS window chrome: a unified toolbar, traffic lights and a glass sidebar. Installs as a theme you can apply from the marketplace.",
+      "source": "greed theme pack",
+      "asset": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/liquid-glass.json",
+        "sha256": "100481d2fa8698c0d73d06033e77e3982e5bc31b6671e97b4cb35bd3252e9596",
+        "size": 668
+      },
+      "preview": {
+        "bg": "#ffffff",
+        "surface": "#eceef2",
+        "accent": "#0066cc",
+        "text": "#1d1d1f"
+      }
+    },
+    {
+      "id": "liquid-glass-dark",
+      "type": "theme",
+      "name": "Liquid Glass Dark",
+      "category": "Theme",
+      "version": "1.0.0",
+      "summary": "The dark glass theme with macOS window chrome.",
+      "description": "The dark glass theme with macOS window chrome: a unified toolbar, traffic lights and a glass sidebar. Installs as a theme you can apply from the marketplace.",
+      "source": "greed theme pack",
+      "asset": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/liquid-glass-dark.json",
+        "sha256": "cbb6ea552ab01d7461fa001ee6dc51dfd29d6ca72127ea7ed10ce8e1c9772baa",
+        "size": 672
+      },
+      "preview": {
+        "bg": "#1c1c1e",
+        "surface": "#242426",
+        "accent": "#409cff",
+        "text": "#f5f5f7"
+      }
     }
   ]
 }

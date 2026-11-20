@@ -14,9 +14,12 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
 - **aria2 core**: HTTP/HTTPS/FTP, BitTorrent, Metalink; resume, multi-connection, checksums
 - **Bundled aria2**: `vendor/aria2/` ships with the repo; falls back to a system `aria2c`
 - **Frameless window**: the title bar is drawn inside the app, with drag, minimize, maximize and edge resize
-- **GUI**: 76 themes (default Dark Mono), sidebar tabs (All/Active/Waiting/Stopped/Complete), a
-  searchable download table with progress, speed, ETA and status, a per-download details pane and
-  a live transfer sparkline in the sidebar
+- **GUI**: 76 built-in themes (default Dark Mono) plus marketplace theme packs, sidebar tabs
+  (All/Active/Waiting/Stopped/Complete), a searchable download table with progress, speed, ETA
+  and status, a per-download details pane and a live transfer sparkline in the sidebar
+- **Liquid Glass**: an optional marketplace theme, in light and dark, that switches to
+  macOS-style chrome: a unified toolbar, traffic lights, a 220px sidebar, sentence-case headers
+  and optical glass on the toolbar, sidebar and dialog chrome. Other themes keep Greed's chrome
 - **Keyboard first**: a command palette, full list navigation and an optional Vim mode; every
   destructive action asks first
 - **Row actions**: open a finished file, open its folder, copy the source link, or retry a
@@ -158,6 +161,13 @@ built-in copy when the network or the catalog is unavailable.
   offered yet.
 - Theme packs use the same JSON format as `themes/*.json`; after install they appear in
   Settings → Appearance next to the 76 built-in themes.
+- Installing a theme does not switch to it. Installed themes show Apply in the Marketplace and
+  in Settings → Appearance; Apply takes effect immediately. Removing the active theme falls back
+  to Dark Mono.
+- Theme JSON may set `chrome` (`greed` or `macos`) and `material` (`solid` or `glass`), plus a
+  `glass` object with `tint`, `tint_alpha`, `highlight`, `highlight_alpha` and `shadow_alpha`.
+  Liquid Glass uses both. macOS chrome also prefers SF Pro Text/Display, then Inter, when
+  `font` is `default`.
 
 `marketplace/catalog.json` documents the catalog format: each item has an `id`, a `type`
 (`engine`, `tool` or `theme`), a version, an asset URL, a SHA-256 and an optional preview

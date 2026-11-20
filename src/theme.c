@@ -198,6 +198,15 @@ static unsigned jcolor(struct json_object *v, const char *key, unsigned fallback
     return color_value(jstr(v, key), fallback);
 }
 
+static double jdouble(struct json_object *v, const char *key, double fallback) {
+    struct json_object *o = NULL;
+    if (!v || !json_object_object_get_ex(v, key, &o)) return fallback;
+    if (json_object_is_type(o, json_type_double) || json_object_is_type(o, json_type_int))
+        return json_object_get_double(o);
+    const char *s = json_object_get_string(o);
+    return s ? strtod(s, NULL) : fallback;
+}
+
 static bool theme_name_taken(const char *name) {
     for (int i = 0; i < greed_theme_count; i++)
         if (!strcmp(greed_themes[i].name, name)) return true;
@@ -257,6 +266,33 @@ static void load_theme_file(const char *path) {
     t.success = jcolor(root, "success", 0x8ee6a8);
     t.warning = jcolor(root, "warning", 0xf7c96b);
     t.info = jcolor(root, "info", 0x7fd4f0);
+
+    const char *chrome = jstr(root, "chrome");
+    t.chrome = chrome && !strcasecmp(chrome, "macos") ? GREED_CHROME_MACOS : GREED_CHROME_GREED;
+    const char *material = jstr(root, "material");
+    t.material = material && !strcasecmp(material, "glass") ? GREED_MATERIAL_GLASS
+                                                             : GREED_MATERIAL_SOLID;
+    t.glass_tint = t.surface;
+    t.glass_highlight = 0xffffff;
+    t.glass_tint_alpha = t.material == GREED_MATERIAL_GLASS ? 0.55f : 0.0f;
+    t.glass_highlight_alpha = t.material == GREED_MATERIAL_GLASS ? 0.5f : 0.0f;
+    t.glass_shadow_alpha = t.material == GREED_MATERIAL_GLASS ? 0.15f : 0.0f;
+    struct json_object *glass = NULL;
+    if (json_object_object_get_ex(root, "glass", &glass) &&
+        json_object_is_type(glass, json_type_object)) {
+        t.glass_tint = jcolor(glass, "tint", t.glass_tint);
+        t.glass_highlight = jcolor(glass, "highlight", t.glass_highlight);
+        t.glass_tint_alpha = (float)jdouble(glass, "tint_alpha", t.glass_tint_alpha);
+        t.glass_highlight_alpha =
+            (float)jdouble(glass, "highlight_alpha", t.glass_highlight_alpha);
+        t.glass_shadow_alpha = (float)jdouble(glass, "shadow_alpha", t.glass_shadow_alpha);
+        if (t.glass_tint_alpha < 0) t.glass_tint_alpha = 0;
+        if (t.glass_tint_alpha > 1) t.glass_tint_alpha = 1;
+        if (t.glass_highlight_alpha < 0) t.glass_highlight_alpha = 0;
+        if (t.glass_highlight_alpha > 1) t.glass_highlight_alpha = 1;
+        if (t.glass_shadow_alpha < 0) t.glass_shadow_alpha = 0;
+        if (t.glass_shadow_alpha > 1) t.glass_shadow_alpha = 1;
+    }
 
     struct json_object *series = NULL;
     if (json_object_object_get_ex(root, "series", &series) &&
@@ -323,6 +359,10 @@ const GreedTheme *greed_theme_find(const char *name) {
     return &greed_themes[0];
 }
 
+bool greed_theme_macos(const GreedTheme *t) {
+    return t && t->chrome == GREED_CHROME_MACOS;
+}
+
 static float srgb_linear(float v) {
     return v <= 0.04045f ? v / 12.92f : powf((v + 0.055f) / 1.055f, 2.4f);
 }
@@ -381,6 +421,38 @@ static cui_color ring_on(cui_color fg, const cui_color *bg, int n, cui_color tow
     return toward;
 }
 
+/* The six fills CUI paints under content: page, surface, raised, muted, hover, active. */
+static void theme_base(const GreedTheme *t, cui_color base[6]) {
+    cui_color text = CUI_RGB(t->text);
+    base[0] = CUI_RGB(t->bg);
+    base[1] = CUI_RGB(t->surface);
+    base[2] = CUI_RGB(t->raised);
+    base[3] = CUI_RGB(t->muted);
+    base[4] = cui_mix(base[1], text, t->dark ? 0.06f : 0.05f);
+    base[5] = cui_mix(base[1], text, t->dark ? 0.10f : 0.08f);
+}
+
+/* Every fill text can land on: base, accent-tinted selections and glass composites. */
+static int theme_surfaces(const GreedTheme *t, const cui_color base[6], cui_color accent,
+                          float subtle_a, cui_color surfaces[16]) {
+    for (int i = 0; i < 6; i++) {
+        surfaces[i] = base[i];
+        surfaces[6 + i] = mix_srgb(base[i], accent, subtle_a);
+    }
+    int n = 12;
+    if (t->material == GREED_MATERIAL_GLASS && t->glass_tint_alpha > 0) {
+        cui_color tint = CUI_RGB(t->glass_tint);
+        float a = t->glass_tint_alpha;
+        cui_color over_bg = mix_srgb(base[0], tint, a);
+        cui_color over_surface = mix_srgb(base[1], tint, a);
+        surfaces[n++] = over_bg;
+        surfaces[n++] = mix_srgb(over_bg, accent, subtle_a);
+        surfaces[n++] = over_surface;
+        surfaces[n++] = mix_srgb(over_surface, accent, subtle_a);
+    }
+    return n;
+}
+
 void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, float text_scale,
                        float spacing) {
     static const GreedTheme *last;
@@ -398,11 +470,9 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
     cui_color bg = CUI_RGB(t->bg);
     cui_color text = CUI_RGB(t->text);
     cui_color white = CUI_RGB(0xffffff), black = CUI_RGB(0x000000);
-    /* Hover and active are derived here, so the text clamp checks the real fills. */
-    cui_color hover = cui_mix(CUI_RGB(t->surface), text, t->dark ? 0.06f : 0.05f);
-    cui_color active = cui_mix(CUI_RGB(t->surface), text, t->dark ? 0.10f : 0.08f);
-    cui_color base[6] = {bg, CUI_RGB(t->surface), CUI_RGB(t->raised), CUI_RGB(t->muted),
-                         hover, active};
+    cui_color base[6];
+    theme_base(t, base);
+    cui_color hover = base[4], active = base[5];
     cui_color text_toward = min_on(text, base, 6) >= 4.5f
                                 ? text
                                 : (color_contrast(white, bg) >= color_contrast(black, bg) ? white
@@ -410,20 +480,21 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
     cui_color accent = readable_on(CUI_RGB(t->accent), base, 6, text_toward);
     /* Selected rows, chips and cards paint accent_subtle over the base fills. */
     float subtle_a = t->dark ? 0.18f : 0.14f;
-    cui_color surfaces[12];
-    for (int i = 0; i < 6; i++) {
-        surfaces[i] = base[i];
-        surfaces[6 + i] = mix_srgb(base[i], accent, subtle_a);
-    }
+    cui_color surfaces[16];
+    int surface_count = theme_surfaces(t, base, accent, subtle_a, surfaces);
     /* The tint can lift a dark fill past the point where tinted text still passes. */
-    text_toward = min_on(text, surfaces, 12) >= 4.5f
+    text_toward = min_on(text, surfaces, surface_count) >= 4.5f
                       ? text
-                      : (min_on(white, surfaces, 12) >= min_on(black, surfaces, 12) ? white
-                                                                                    : black);
-    cui_color secondary = readable_on(CUI_RGB(t->dim), surfaces, 12, text_toward);
-    cui_color muted = readable_on(mix_srgb(CUI_RGB(t->dim), bg, 0.12f), surfaces, 12, text_toward);
+                      : (min_on(white, surfaces, surface_count) >=
+                                 min_on(black, surfaces, surface_count)
+                             ? white
+                             : black);
+    cui_color secondary = readable_on(CUI_RGB(t->dim), surfaces, surface_count, text_toward);
+    cui_color muted =
+        readable_on(mix_srgb(CUI_RGB(t->dim), bg, 0.12f), surfaces, surface_count, text_toward);
     /* Keep muted below secondary: AA is the floor, not a reason to outshine it. */
-    if (min_on(muted, surfaces, 12) > min_on(secondary, surfaces, 12)) muted = secondary;
+    if (min_on(muted, surfaces, surface_count) > min_on(secondary, surfaces, surface_count))
+        muted = secondary;
     cui_color accent_fg = readable_on(
         CUI_RGB(t->accent_fg), &accent, 1,
         color_contrast(white, accent) >= color_contrast(black, accent) ? white : black);
@@ -431,7 +502,7 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
     c[CUI_TOKEN_SURFACE] = base[1];
     c[CUI_TOKEN_SURFACE_RAISED] = base[2];
     c[CUI_TOKEN_SURFACE_MUTED] = base[3];
-    c[CUI_TOKEN_FOREGROUND] = readable_on(text, surfaces, 12, text_toward);
+    c[CUI_TOKEN_FOREGROUND] = readable_on(text, surfaces, surface_count, text_toward);
     c[CUI_TOKEN_TEXT_SECONDARY] = secondary;
     c[CUI_TOKEN_TEXT_MUTED] = muted;
     c[CUI_TOKEN_BORDER] = CUI_RGB(t->border);
@@ -439,20 +510,20 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
     c[CUI_TOKEN_BORDER_STRONG] = cui_mix(CUI_RGB(t->border), CUI_RGB(t->text), 0.35f);
     c[CUI_TOKEN_ACCENT] = accent;
     c[CUI_TOKEN_ACCENT_STRONG] =
-        readable_on(CUI_RGB(t->accent_strong), surfaces, 12, text_toward);
+        readable_on(CUI_RGB(t->accent_strong), surfaces, surface_count, text_toward);
     c[CUI_TOKEN_ACCENT_SUBTLE] = cui_alpha(accent, subtle_a);
     c[CUI_TOKEN_ACCENT_FOREGROUND] = accent_fg;
     c[CUI_TOKEN_SUCCESS] =
-        readable_on(mix_srgb(CUI_RGB(t->success), text, 0.08f), surfaces, 12, text_toward);
+        readable_on(mix_srgb(CUI_RGB(t->success), text, 0.08f), surfaces, surface_count, text_toward);
     c[CUI_TOKEN_WARNING] =
-        readable_on(mix_srgb(CUI_RGB(t->warning), text, 0.08f), surfaces, 12, text_toward);
+        readable_on(mix_srgb(CUI_RGB(t->warning), text, 0.08f), surfaces, surface_count, text_toward);
     c[CUI_TOKEN_DANGER] =
-        readable_on(mix_srgb(CUI_RGB(t->danger), text, 0.08f), surfaces, 12, text_toward);
+        readable_on(mix_srgb(CUI_RGB(t->danger), text, 0.08f), surfaces, surface_count, text_toward);
     c[CUI_TOKEN_INFO] =
-        readable_on(mix_srgb(CUI_RGB(t->info), text, 0.08f), surfaces, 12, text_toward);
+        readable_on(mix_srgb(CUI_RGB(t->info), text, 0.08f), surfaces, surface_count, text_toward);
     c[CUI_TOKEN_HOVER] = hover;
     c[CUI_TOKEN_ACTIVE] = active;
-    c[CUI_TOKEN_FOCUS_RING] = ring_on(CUI_RGB(t->accent_strong), surfaces, 12, text_toward);
+    c[CUI_TOKEN_FOCUS_RING] = ring_on(CUI_RGB(t->accent_strong), surfaces, surface_count, text_toward);
     c[CUI_TOKEN_CONTROL_ON] = accent;
     c[CUI_TOKEN_CONTROL_GLYPH] = accent_fg;
     c[CUI_TOKEN_CONTROL_TRACK] = cui_mix(CUI_RGB(t->bg), CUI_RGB(t->border), 0.6f);
@@ -471,7 +542,33 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
     /* A hair slower than CUI's stock springs: settles instead of snapping. */
     th->motion = motion_speed > 0.05f ? 1.1f / motion_speed : 1.1f;
     th->font_scale = text_scale;
-    th->control_sm = 30.0f * spacing;
-    th->control_md = 36.0f * spacing;
-    th->control_lg = 44.0f * spacing;
+    bool mac = greed_theme_macos(t);
+    th->radius_control = mac ? 6.0f : 10.0f;
+    th->radius_panel = mac ? 10.0f : 14.0f;
+    th->radius_surface = mac ? 12.0f : 18.0f;
+    th->control_sm = (mac ? 28.0f : 30.0f) * spacing;
+    th->control_md = (mac ? 32.0f : 36.0f) * spacing;
+    th->control_lg = (mac ? 40.0f : 44.0f) * spacing;
+    memset(th->shadow_resting, 0, sizeof th->shadow_resting);
+    memset(th->shadow_raised, 0, sizeof th->shadow_raised);
+    memset(th->shadow_floating, 0, sizeof th->shadow_floating);
+    if (mac) {
+        float lift = t->glass_shadow_alpha > 0 ? t->glass_shadow_alpha : (t->dark ? 0.4f : 0.14f);
+        th->shadow_resting[0] = (cui_shadow){1, 0, 0, t->dark ? 0.12f : 0.04f};
+        th->shadow_raised[0] = (cui_shadow){8, 20, 0, t->dark ? 0.28f : 0.08f};
+        th->shadow_raised[1] = (cui_shadow){1, 3, 0, t->dark ? 0.12f : 0.04f};
+        th->shadow_floating[0] = (cui_shadow){20, 48, -8, lift};
+        th->shadow_floating[1] = (cui_shadow){2, 8, 0, t->dark ? 0.16f : 0.06f};
+    } else if (!t->dark) {
+        th->shadow_resting[0] = (cui_shadow){1, 2, 0, 0.035f};
+        th->shadow_raised[0] = (cui_shadow){6, 18, 0, 0.065f};
+        th->shadow_raised[1] = (cui_shadow){1, 3, 0, 0.035f};
+        th->shadow_floating[0] = (cui_shadow){12, 32, -4, 0.12f};
+        th->shadow_floating[1] = (cui_shadow){1, 3, 0, 0.06f};
+    } else {
+        th->shadow_resting[0] = (cui_shadow){1, 2, 0, 0.18f};
+        th->shadow_raised[0] = (cui_shadow){8, 22, 0, 0.22f};
+        th->shadow_floating[0] = (cui_shadow){14, 36, -4, 0.40f};
+        th->shadow_floating[1] = (cui_shadow){1, 3, 0, 0.24f};
+    }
 }

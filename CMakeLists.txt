@@ -56,4 +56,12 @@ target_link_libraries(greed PRIVATE
 )
 target_include_directories(greed PRIVATE ${JSONC_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS})
 
+enable_testing()
+add_executable(greed-contrast-check tests/contrast.c)
+target_include_directories(greed-contrast-check PRIVATE src vendor/cui ${JSONC_INCLUDE_DIRS})
+target_compile_definitions(greed-contrast-check PRIVATE
+                           GREED_MARKETPLACE_DIR="${CMAKE_SOURCE_DIR}/marketplace")
+target_link_libraries(greed-contrast-check PRIVATE cui_vendor ${JSONC_LIBRARIES} m)
+add_test(NAME contrast COMMAND greed-contrast-check)
+
 install(TARGETS greed RUNTIME DESTINATION bin)
