@@ -71,6 +71,7 @@ void config_defaults(Config *c) {
     c->motion_speed = 1.0f;
     snprintf(c->theme, sizeof c->theme, "Dark Mono");
     snprintf(c->font, sizeof c->font, "default");
+    c->logo_app_font = false;
     c->sidebar_width = 0;
     c->text_scale = 1.0f;
     c->spacing = 1.0f;
@@ -140,6 +141,7 @@ void config_load(Config *c) {
             if (theme) snprintf(c->theme, sizeof c->theme, "%s", theme);
             const char *font = jstr(v, "font");
             if (font) snprintf(c->font, sizeof c->font, "%s", font);
+            c->logo_app_font = jbool(v, "logo_app_font", c->logo_app_font);
             c->sidebar_width = jint(v, "sidebar_width", c->sidebar_width);
             if (c->sidebar_width > 0 && c->sidebar_width < 140) c->sidebar_width = 140;
             if (c->sidebar_width > 420) c->sidebar_width = 420;
@@ -176,6 +178,7 @@ bool config_save(const Config *c) {
     json_object_object_add(v, "motion_speed", json_object_new_double(c->motion_speed));
     json_object_object_add(v, "theme", json_object_new_string(c->theme));
     json_object_object_add(v, "font", json_object_new_string(c->font));
+    json_object_object_add(v, "logo_app_font", json_object_new_boolean(c->logo_app_font));
     json_object_object_add(v, "sidebar_width", json_object_new_int(c->sidebar_width));
     json_object_object_add(v, "text_scale", json_object_new_double(c->text_scale));
     json_object_object_add(v, "spacing", json_object_new_double(c->spacing));

@@ -41,7 +41,8 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
   download-folder card with free space and an Open folder button
 - **Scheduled downloads**: presets or an exact date and time; Greed hands the link to aria2 when it is due
 - **Settings**: General, Bandwidth, Torrents, Appearance, Keys and Updates tabs; theme, any
-  installed font, text size, sidebar width, spacing, motion, engine limits and a keymap diagram
+  installed font, logo style, text size, sidebar width, spacing, motion, engine limits and a
+  keymap diagram
 - **In-app updates**: Settings → Updates checks the latest GitHub release, downloads the
   AppImage and replaces the running copy (or installs it to `~/.local/bin/greed`), then offers
   a restart
@@ -195,6 +196,7 @@ palette.
   "verify_after_complete": true,
   "theme": "Dark Mono",
   "font": "default",
+  "logo_app_font": false,
   "sidebar_width": 0,
   "text_scale": 1.0,
   "spacing": 1.0,
@@ -204,7 +206,8 @@ palette.
 ```
 
 `font` is a preset (`default`, `sans`, `serif`, `mono`) or any font family installed on the
-device; `sidebar_width` is in pixels from 140 to 420, where 0 uses the theme default (198, or
+device; `logo_app_font` draws the titlebar wordmark in the app font instead of the Greed logo.
+`sidebar_width` is in pixels from 140 to 420, where 0 uses the theme default (198, or
 220 with macOS chrome). `text_scale` ranges from 0.85 to 1.3 and `spacing` from 0.9 to 1.12.
 The same values can be changed in Settings > Appearance, where the font list is searchable and
 the sidebar width also has a slider.

@@ -68618,7 +68618,7 @@ void cui_scroll_show(cui_ctx *ui, const char *scope, const char *scroll_id, floa
 /* Split view                                                               */
 /* ------------------------------------------------------------------------ */
 
-struct cui_split_build { cui_id id; float *ratio; bool vertical; int container; float min1, min2, max1; struct cui_split_build *prev; float hover; };
+struct cui_split_build { cui_id id; float *ratio; bool vertical; int container; float min1, min2, max1; bool hide_divider; struct cui_split_build *prev; float hover; };
 typedef struct { float hover; bool rtl; } cui__split_state;
 
 static void cui__paint_split(cui_ctx *ui, cui_node *n, void *data) {
@@ -68633,9 +68633,10 @@ void cui_split_begin(cui_ctx *ui, const char *id_str, float *ratio, const cui_sp
     cui_id id = cui_make_id(ui, id_str);
     struct cui_split_build *b = cui__frame_alloc(ui, sizeof *b);
     b->id = id; b->ratio = ratio; b->vertical = o->vertical;
-    b->min1 = o->min_first > 0 ? o->min_first : 120;
+    b->min1 = o->min_first > 0 ? o->min_first : 0;
     b->min2 = o->min_second > 0 ? o->min_second : 120;
     b->max1 = o->max_first;
+    b->hide_divider = o->hide_divider;
     b->prev = ui->building.split;
     ui->building.split = b;
     cui_rect pr = cui__prev_rect(ui, id);
@@ -68695,17 +68696,19 @@ void cui_split_next(cui_ctx *ui) {
        the grab area is a wider strip laid over it */
     cui_id lid = b->id ^ 0x78u;
     int line = cui__leaf(ui, lid, b->vertical ? CUI_FILL : CUI_PX(1), b->vertical ? CUI_PX(1) : CUI_FILL);
-    ui->nodes[line].bg = CUI_C(ui, BORDER);
-    cui_rect lr = cui__prev_rect(ui, lid), cr = cui__prev_rect(ui, b->id);
-    if (lr.w > 0 && lr.h > 0) {
-        int h = b->vertical ? cui__absolute(ui, b->id ^ 0x77u, lr.x - cr.x, lr.y - cr.y - 4, lr.w, 9)
-                            : cui__absolute(ui, b->id ^ 0x77u, lr.x - cr.x - 4, lr.y - cr.y, 9, lr.h);
-        cui__mark_interactive(ui, h, 0);
-        cui__handle_paint *hp = cui__frame_alloc(ui, sizeof *hp);
-        hp->hover = b->hover; hp->vertical = b->vertical;
-        ui->nodes[h].paint = cui__paint_split_handle;
-        ui->nodes[h].paint_data = hp;
-        ui->nodes[h].flags |= CUI_NF_ON_TOP;
+    if (!b->hide_divider) {
+        ui->nodes[line].bg = CUI_C(ui, BORDER);
+        cui_rect lr = cui__prev_rect(ui, lid), cr = cui__prev_rect(ui, b->id);
+        if (lr.w > 0 && lr.h > 0) {
+            int h = b->vertical ? cui__absolute(ui, b->id ^ 0x77u, lr.x - cr.x, lr.y - cr.y - 4, lr.w, 9)
+                                : cui__absolute(ui, b->id ^ 0x77u, lr.x - cr.x - 4, lr.y - cr.y, 9, lr.h);
+            cui__mark_interactive(ui, h, 0);
+            cui__handle_paint *hp = cui__frame_alloc(ui, sizeof *hp);
+            hp->hover = b->hover; hp->vertical = b->vertical;
+            ui->nodes[h].paint = cui__paint_split_handle;
+            ui->nodes[h].paint_data = hp;
+            ui->nodes[h].flags |= CUI_NF_ON_TOP;
+        }
     }
     float lo = b->min1 > 0 ? 0.02f : 0.0f;
     float rr = cui__clampf(*b->ratio, lo, 0.98f);

@@ -1151,6 +1151,19 @@ static cui_texture logo_texture(cui_ctx *ui) {
     return tex;
 }
 
+/* The wordmark is the rendered logo unless Settings asks for the app font. */
+static void wordmark(App *a, cui_ctx *ui, float size) {
+    if (!active_cfg(a)->logo_app_font) {
+        cui_texture logo = logo_texture(ui);
+        if (logo) {
+            cui_image(ui, logo, .width = CUI_PX(GREED_LOGO_W / 2),
+                      .height = CUI_PX(GREED_LOGO_H / 2), .tint = CUI_COLOR_FOREGROUND);
+            return;
+        }
+    }
+    cui_text(ui, "Greed", .font = CUI_FONT_MEDIUM, .size = size);
+}
+
 typedef struct {
     cui_color fill;
     const char *glyph;
@@ -1233,12 +1246,7 @@ static void titlebar(App *a, cui_ctx *ui) {
         cui_row(ui, .id = "dragzone", .width = CUI_FILL, .height = CUI_FILL, .gap = 8,
                 .align = CUI_ALIGN_CENTER) {
             cui_icon(ui, CUI_ICON_DOWNLOAD, 18, CUI_COLOR_ACCENT_STRONG);
-            cui_texture logo = logo_texture(ui);
-            if (logo)
-                cui_image(ui, logo, .width = CUI_PX(GREED_LOGO_W / 2),
-                          .height = CUI_PX(GREED_LOGO_H / 2), .tint = CUI_COLOR_FOREGROUND);
-            else
-                cui_text(ui, "Greed", .font = CUI_FONT_MEDIUM, .size = 15);
+            wordmark(a, ui, 15);
         }
         if (cui_button(ui, "Add", .icon = CUI_ICON_PLUS, .variant = CUI_BUTTON_PRIMARY,
                        .size = CUI_SIZE_SM))
@@ -2487,9 +2495,9 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                                   CUI_ICON_GLOBE, CUI_ICON_PALETTE, CUI_ICON_KEYBOARD,
                                   CUI_ICON_REFRESH_CW};
     /* Leave room for the title, tabs and footer so Save stays on screen. */
-    float body_h = cui_viewport_size(ui).y - 210;
-    if (body_h > 430) body_h = 430;
-    if (body_h < 180) body_h = 180;
+    float body_h = cui_viewport_size(ui).y - 280;
+    if (body_h > 400) body_h = 400;
+    if (body_h < 140) body_h = 140;
     cui_dialog(ui, "Settings", &a->show_settings, .width = 680) {
         cui_tabs(ui, "settings-tabs", tabs, 6, &a->settings_tab, .icons = icons);
         if (a->settings_seen_tab != a->settings_tab) {
@@ -2619,6 +2627,16 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                 }
                 cui_muted(ui, "Pick any font installed on this device. Default uses the "
                               "fonts Greed ships with.");
+                if (!mac_chrome(a)) {
+                    cui_label(ui, "Logo");
+                    static const char *logo_opts[] = {"Original", "App font"};
+                    int logo = a->edit.logo_app_font ? 1 : 0;
+                    if (cui_segmented(ui, "logo-font", logo_opts, 2, &logo,
+                                      .size = CUI_SIZE_SM))
+                        a->edit.logo_app_font = logo == 1;
+                    cui_muted(ui, "Original keeps the drawn Greed wordmark; App font matches "
+                                  "the rest of the interface.");
+                }
                 float text_pct = a->edit.text_scale * 100.0f;
                 if (cui_slider(ui, "Text size", &text_pct, 85, 130, .step = 5,
                                .show_value = true, .format = "%.0f%%", .width = CUI_FILL))
@@ -3639,7 +3657,8 @@ static void frame(cui_ctx *ui, void *user) {
                 float min_first = a->sidebar_open && open > 0.99f ? 140.0f : 0.0f;
                 cui_split_begin(ui, "main-split", &ratio,
                                 &(cui_split_opts){.min_first = min_first, .min_second = 300,
-                                                  .max_first = 420});
+                                                  .max_first = 420,
+                                                  .hide_divider = !a->sidebar_open});
                 if (ratio != before) {
                     int w = (int)(ratio * vw + 0.5f);
                     if (w < 140) w = 140;

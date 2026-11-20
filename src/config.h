@@ -18,6 +18,7 @@ typedef struct {
     float motion_speed;        /* 1 = normal, higher is faster */
     char theme[48];
     char font[128];            /* default, sans, serif, mono, or an installed family */
+    bool logo_app_font;        /* draw the wordmark in the app font instead of the logo image */
     int sidebar_width;         /* px, 0 = the theme's default */
     float text_scale;          /* 0.85 - 1.30 */
     float spacing;             /* 0.9 compact, 1 normal, 1.12 spacious */
