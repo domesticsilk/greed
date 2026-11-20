@@ -1300,13 +1300,7 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
     bool mac = mac_chrome(a);
     bool glass = mac_glass(a);
     GlassPaint g = glass_fill(a, ui);
-    /* Fade with the width so the clipped labels do not flash while collapsing. */
-    float opacity = width / sidebar_width(a);
-    if (opacity > 1.0f) opacity = 1.0f;
-    if (opacity < 0.05f) opacity = 0.05f;
-
-    cui_box(ui, .dir = CUI_STACK, .width = CUI_PX(width), .height = CUI_FILL,
-            .opacity = opacity) {
+    cui_box(ui, .dir = CUI_STACK, .width = CUI_PX(width), .height = CUI_FILL) {
         if (glass)
             cui_canvas(ui, "sidebar-glass", CUI_FILL, CUI_FILL, paint_glass, &g, sizeof g);
         cui_column(ui, .width = CUI_FILL, .height = CUI_FILL,
@@ -3632,12 +3626,18 @@ static void frame(cui_ctx *ui, void *user) {
             if (sw > 0.5f) {
                 float ratio = sw / vw;
                 float before = ratio;
+                /* A settled sidebar never goes below 140px, but during the
+                 * open/close animation that minimum would hold the panel at
+                 * 140px and pop the rest away at the end. */
+                float min_first = a->sidebar_open && open > 0.99f ? 140.0f : 0.0f;
                 cui_split_begin(ui, "main-split", &ratio,
-                                &(cui_split_opts){.min_first = 140, .min_second = 300,
+                                &(cui_split_opts){.min_first = min_first, .min_second = 300,
                                                   .max_first = 420});
                 if (ratio != before) {
-                    a->cfg.sidebar_width = (int)(ratio * vw + 0.5f);
-                    a->edit.sidebar_width = a->cfg.sidebar_width;
+                    int w = (int)(ratio * vw + 0.5f);
+                    if (w < 140) w = 140;
+                    a->cfg.sidebar_width = w;
+                    a->edit.sidebar_width = w;
                     a->sidebar_dirty = true;
                 }
                 sidebar(a, ui, ratio * vw);

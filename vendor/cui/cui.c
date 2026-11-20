@@ -68663,7 +68663,8 @@ void cui_split_begin(cui_ctx *ui, const char *id_str, float *ratio, const cui_sp
     b->container = i;
     n->paint = cui__paint_split; n->paint_data = st;
     cui__open(ui, i);
-    float rr = cui__clampf(*ratio, 0.02f, 0.98f);
+    float lo = b->min1 > 0 ? 0.02f : 0.0f;
+    float rr = cui__clampf(*ratio, lo, 0.98f);
     int p1 = cui__node_new(ui, 0);
     cui_node *pn = &ui->nodes[p1];
     pn->flags |= CUI_NF_CLIP;
@@ -68706,7 +68707,8 @@ void cui_split_next(cui_ctx *ui) {
         ui->nodes[h].paint_data = hp;
         ui->nodes[h].flags |= CUI_NF_ON_TOP;
     }
-    float rr = cui__clampf(*b->ratio, 0.02f, 0.98f);
+    float lo = b->min1 > 0 ? 0.02f : 0.0f;
+    float rr = cui__clampf(*b->ratio, lo, 0.98f);
     int p2 = cui__node_new(ui, 0);
     cui_node *pn = &ui->nodes[p2];
     pn->flags |= CUI_NF_CLIP;
