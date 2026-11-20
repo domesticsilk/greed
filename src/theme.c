@@ -1,6 +1,7 @@
 /* Generated theme data: palettes from the published editor colour schemes. */
 #include "theme.h"
 
+#include <math.h>
 #include <string.h>
 
 const GreedTheme greed_themes[] = {
@@ -169,6 +170,54 @@ const GreedTheme *greed_theme_find(const char *name) {
     return &greed_themes[0];
 }
 
+static float srgb_linear(float v) {
+    return v <= 0.04045f ? v / 12.92f : powf((v + 0.055f) / 1.055f, 2.4f);
+}
+
+static float color_luminance(cui_color c) {
+    return 0.2126f * srgb_linear(c.r / 255.0f) + 0.7152f * srgb_linear(c.g / 255.0f) +
+           0.0722f * srgb_linear(c.b / 255.0f);
+}
+
+static float color_contrast(cui_color a, cui_color b) {
+    float la = color_luminance(a), lb = color_luminance(b);
+    if (la < lb) {
+        float tmp = la;
+        la = lb;
+        lb = tmp;
+    }
+    return (la + 0.05f) / (lb + 0.05f);
+}
+
+static cui_color mix_srgb(cui_color a, cui_color b, float t) {
+    return (cui_color){
+        (uint8_t)lroundf(a.r + (b.r - a.r) * t),
+        (uint8_t)lroundf(a.g + (b.g - a.g) * t),
+        (uint8_t)lroundf(a.b + (b.b - a.b) * t),
+        255,
+    };
+}
+
+/* Lowest contrast of a text colour against every surface it can sit on. */
+static float min_on(cui_color fg, const cui_color *bg, int n) {
+    float low = 99.0f;
+    for (int i = 0; i < n; i++) {
+        float r = color_contrast(fg, bg[i]);
+        if (r < low) low = r;
+    }
+    return low;
+}
+
+/* Blend toward the primary text colour until every surface passes WCAG AA. */
+static cui_color readable_on(cui_color fg, const cui_color *bg, int n, cui_color toward) {
+    if (min_on(fg, bg, n) >= 4.5f) return fg;
+    for (int i = 1; i <= 32; i++) {
+        cui_color c = mix_srgb(fg, toward, i / 32.0f);
+        if (min_on(c, bg, n) >= 4.5f) return c;
+    }
+    return toward;
+}
+
 void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, float text_scale,
                        float spacing) {
     static const GreedTheme *last;
@@ -183,35 +232,70 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
     }
     cui_theme *th = cui_theme_get(ui);
     cui_color *c = th->colors;
-    c[CUI_TOKEN_BACKGROUND] = CUI_RGB(t->bg);
-    c[CUI_TOKEN_SURFACE] = CUI_RGB(t->surface);
-    c[CUI_TOKEN_SURFACE_RAISED] = CUI_RGB(t->raised);
-    c[CUI_TOKEN_SURFACE_MUTED] = CUI_RGB(t->muted);
-    c[CUI_TOKEN_FOREGROUND] = CUI_RGB(t->text);
-    c[CUI_TOKEN_TEXT_SECONDARY] = CUI_RGB(t->dim);
-    /* Muted labels still need AA: on dark themes fade only slightly, on light keep dim. */
-    c[CUI_TOKEN_TEXT_MUTED] = t->dark ? cui_mix(CUI_RGB(t->dim), CUI_RGB(t->bg), 0.10f)
-                                     : CUI_RGB(t->dim);
+    cui_color bg = CUI_RGB(t->bg);
+    cui_color text = CUI_RGB(t->text);
+    cui_color white = CUI_RGB(0xffffff), black = CUI_RGB(0x000000);
+    /* Hover and active are derived here, so the text clamp checks the real fills. */
+    cui_color hover = cui_mix(CUI_RGB(t->surface), text, t->dark ? 0.06f : 0.05f);
+    cui_color active = cui_mix(CUI_RGB(t->surface), text, t->dark ? 0.10f : 0.08f);
+    cui_color base[6] = {bg, CUI_RGB(t->surface), CUI_RGB(t->raised), CUI_RGB(t->muted),
+                         hover, active};
+    cui_color text_toward = min_on(text, base, 6) >= 4.5f
+                                ? text
+                                : (color_contrast(white, bg) >= color_contrast(black, bg) ? white
+                                                                                          : black);
+    cui_color accent = readable_on(CUI_RGB(t->accent), base, 6, text_toward);
+    /* Selected rows, chips and cards paint accent_subtle over the base fills. */
+    float subtle_a = t->dark ? 0.18f : 0.14f;
+    cui_color surfaces[12];
+    for (int i = 0; i < 6; i++) {
+        surfaces[i] = base[i];
+        surfaces[6 + i] = mix_srgb(base[i], accent, subtle_a);
+    }
+    /* The tint can lift a dark fill past the point where tinted text still passes. */
+    text_toward = min_on(text, surfaces, 12) >= 4.5f
+                      ? text
+                      : (min_on(white, surfaces, 12) >= min_on(black, surfaces, 12) ? white
+                                                                                    : black);
+    cui_color secondary = readable_on(CUI_RGB(t->dim), surfaces, 12, text_toward);
+    cui_color muted = readable_on(mix_srgb(CUI_RGB(t->dim), bg, 0.12f), surfaces, 12, text_toward);
+    /* Keep muted below secondary: AA is the floor, not a reason to outshine it. */
+    if (min_on(muted, surfaces, 12) > min_on(secondary, surfaces, 12)) muted = secondary;
+    cui_color accent_fg = readable_on(
+        CUI_RGB(t->accent_fg), &accent, 1,
+        color_contrast(white, accent) >= color_contrast(black, accent) ? white : black);
+    c[CUI_TOKEN_BACKGROUND] = bg;
+    c[CUI_TOKEN_SURFACE] = base[1];
+    c[CUI_TOKEN_SURFACE_RAISED] = base[2];
+    c[CUI_TOKEN_SURFACE_MUTED] = base[3];
+    c[CUI_TOKEN_FOREGROUND] = readable_on(text, surfaces, 12, text_toward);
+    c[CUI_TOKEN_TEXT_SECONDARY] = secondary;
+    c[CUI_TOKEN_TEXT_MUTED] = muted;
     c[CUI_TOKEN_BORDER] = CUI_RGB(t->border);
     c[CUI_TOKEN_BORDER_SUBTLE] = cui_mix(CUI_RGB(t->bg), CUI_RGB(t->border), 0.55f);
     c[CUI_TOKEN_BORDER_STRONG] = cui_mix(CUI_RGB(t->border), CUI_RGB(t->text), 0.35f);
-    c[CUI_TOKEN_ACCENT] = CUI_RGB(t->accent);
-    c[CUI_TOKEN_ACCENT_STRONG] = CUI_RGB(t->accent_strong);
-    c[CUI_TOKEN_ACCENT_SUBTLE] = cui_alpha(CUI_RGB(t->accent), t->dark ? 0.18f : 0.14f);
-    c[CUI_TOKEN_ACCENT_FOREGROUND] = CUI_RGB(t->accent_fg);
-    c[CUI_TOKEN_SUCCESS] = cui_mix(CUI_RGB(t->success), CUI_RGB(t->text), 0.08f);
-    c[CUI_TOKEN_WARNING] = cui_mix(CUI_RGB(t->warning), CUI_RGB(t->text), 0.08f);
-    c[CUI_TOKEN_DANGER] = cui_mix(CUI_RGB(t->danger), CUI_RGB(t->text), 0.08f);
-    c[CUI_TOKEN_INFO] = cui_mix(CUI_RGB(t->info), CUI_RGB(t->text), 0.08f);
-    c[CUI_TOKEN_HOVER] = cui_mix(CUI_RGB(t->surface), CUI_RGB(t->text), t->dark ? 0.06f : 0.05f);
-    c[CUI_TOKEN_ACTIVE] = cui_mix(CUI_RGB(t->surface), CUI_RGB(t->text), t->dark ? 0.10f : 0.08f);
+    c[CUI_TOKEN_ACCENT] = accent;
+    c[CUI_TOKEN_ACCENT_STRONG] =
+        readable_on(CUI_RGB(t->accent_strong), surfaces, 12, text_toward);
+    c[CUI_TOKEN_ACCENT_SUBTLE] = cui_alpha(accent, subtle_a);
+    c[CUI_TOKEN_ACCENT_FOREGROUND] = accent_fg;
+    c[CUI_TOKEN_SUCCESS] =
+        readable_on(mix_srgb(CUI_RGB(t->success), text, 0.08f), surfaces, 12, text_toward);
+    c[CUI_TOKEN_WARNING] =
+        readable_on(mix_srgb(CUI_RGB(t->warning), text, 0.08f), surfaces, 12, text_toward);
+    c[CUI_TOKEN_DANGER] =
+        readable_on(mix_srgb(CUI_RGB(t->danger), text, 0.08f), surfaces, 12, text_toward);
+    c[CUI_TOKEN_INFO] =
+        readable_on(mix_srgb(CUI_RGB(t->info), text, 0.08f), surfaces, 12, text_toward);
+    c[CUI_TOKEN_HOVER] = hover;
+    c[CUI_TOKEN_ACTIVE] = active;
     c[CUI_TOKEN_FOCUS_RING] = CUI_RGB(t->accent_strong);
-    c[CUI_TOKEN_CONTROL_ON] = CUI_RGB(t->accent);
-    c[CUI_TOKEN_CONTROL_GLYPH] = CUI_RGB(t->accent_fg);
+    c[CUI_TOKEN_CONTROL_ON] = accent;
+    c[CUI_TOKEN_CONTROL_GLYPH] = accent_fg;
     c[CUI_TOKEN_CONTROL_TRACK] = cui_mix(CUI_RGB(t->bg), CUI_RGB(t->border), 0.6f);
     c[CUI_TOKEN_CONTROL_TRACK_HOVER] = cui_mix(CUI_RGB(t->border), CUI_RGB(t->text), 0.15f);
     c[CUI_TOKEN_CONTROL_THUMB] = CUI_RGB(t->text);
-    c[CUI_TOKEN_CONTROL_THUMB_ON] = CUI_RGB(t->accent_fg);
+    c[CUI_TOKEN_CONTROL_THUMB_ON] = accent_fg;
     c[CUI_TOKEN_SCRIM] = (cui_color){0, 0, 0, t->dark ? 140 : 82};
     for (int i = 0; i < 6; i++) c[CUI_TOKEN_SERIES_1 + i] = CUI_RGB(t->series[i]);
     th->tone_sky = CUI_RGB(t->info);
