@@ -1183,14 +1183,22 @@ static void details(App *a, cui_ctx *ui) {
                 if (failed) retry_download(a, d);
                 else toggle_selected(a);
             }
+            char open_file[PATH_MAX] = {0};
+            bool can_open = !strcmp(d->status, "complete") &&
+                            download_path(d, open_file, sizeof open_file) &&
+                            access(open_file, R_OK) == 0;
             cui_row(ui, .gap = 8) {
+                if (can_open && cui_button(ui, "Open", .icon = CUI_ICON_FILE,
+                                           .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST,
+                                           .width = CUI_FILL))
+                    cui_app_open_url(open_file);
                 if (cui_button(ui, "Folder", .icon = CUI_ICON_FOLDER_OPEN, .size = CUI_SIZE_SM,
                                .variant = CUI_BUTTON_GHOST, .width = CUI_FILL))
                     open_folder(d->dir);
-                if (cui_button(ui, "Remove", .icon = CUI_ICON_TRASH_2, .size = CUI_SIZE_SM,
-                               .variant = CUI_BUTTON_GHOST, .width = CUI_FILL))
-                    request_remove(a);
             }
+            if (cui_button(ui, "Remove", .icon = CUI_ICON_TRASH_2, .size = CUI_SIZE_SM,
+                           .variant = CUI_BUTTON_GHOST, .full_width = true))
+                request_remove(a);
         }
     }
 }
@@ -1336,6 +1344,11 @@ static void download_table(App *a, cui_ctx *ui) {
                     }
                     if (cui_menu_item(ui, "Info", .icon = CUI_ICON_INFO))
                         open_info(a, d->gid);
+                    if (cui_menu_item(ui, "Copy link", .icon = CUI_ICON_LINK,
+                                      .disabled = !d->url[0])) {
+                        cui_clipboard_set(ui, d->url);
+                        set_status(a, "Link copied");
+                    }
                     bool can_verify = download_is_finished(d) && d->file_count <= 1;
                     if (cui_menu_item(ui, "Verify checksum", .icon = CUI_ICON_CHECK_CHECK,
                                       .disabled = !can_verify))
@@ -1354,6 +1367,13 @@ static void download_table(App *a, cui_ctx *ui) {
                                              .disabled = !running)) {
                         pause_selection(a);
                     }
+                    char open_path[PATH_MAX] = {0};
+                    bool can_open = !strcmp(d->status, "complete") &&
+                                    download_path(d, open_path, sizeof open_path) &&
+                                    access(open_path, R_OK) == 0;
+                    if (cui_menu_item(ui, "Open file", .icon = CUI_ICON_FILE,
+                                      .disabled = !can_open))
+                        cui_app_open_url(open_path);
                     if (cui_menu_item(ui, "Open folder", .icon = CUI_ICON_FOLDER_OPEN))
                         open_folder(d->dir);
                     cui_menu_separator(ui);
@@ -2516,7 +2536,11 @@ static void info_overview(App *a, Download *d, cui_ctx *ui) {
     kv(ui, "GID", d->gid);
     cui_text(ui, "Directory", .size = 12, .color = CUI_COLOR_TEXT_MUTED);
     cui_text(ui, d->dir, .size = 12, .font = CUI_FONT_MONO, .color = CUI_COLOR_TEXT_SECONDARY);
-    cui_text(ui, "URL", .size = 12, .color = CUI_COLOR_TEXT_MUTED);
+    cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
+        cui_text(ui, "URL", .size = 12, .color = CUI_COLOR_TEXT_MUTED);
+        cui_spacer(ui);
+        if (d->url[0]) cui_copy_button(ui, "info-copy-url", d->url);
+    }
     cui_text(ui, d->url, .size = 10, .font = CUI_FONT_MONO, .color = CUI_COLOR_TEXT_SECONDARY);
 
     char file[PATH_MAX];

@@ -19,6 +19,8 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
   a live transfer sparkline in the sidebar
 - **Keyboard first**: a command palette, full list navigation and an optional Vim mode; every
   destructive action asks first
+- **Row actions**: open a finished file, open its folder, copy the source link, or retry a
+  failed download from the row menu
 - **Bulk actions**: drag a selection band or check several downloads, then pause, resume or
   remove them in one go
 - **CLI**: `greed add/list/status/pause/resume/remove/stats/shutdown`, with `--json` for

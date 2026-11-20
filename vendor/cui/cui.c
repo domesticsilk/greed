@@ -22186,6 +22186,11 @@ void cui_button_group_end(cui_ctx *ui) {
 
 typedef struct { double copied_at; } cui__copy_state;
 
+void cui_clipboard_set(cui_ctx *ui, const char *text) {
+    if (ui && ui->platform.set_clipboard && text)
+        ui->platform.set_clipboard(ui->platform.user, text);
+}
+
 /** Keep the button ID stable across the Copy and Copied presentations so
  * keyboard focus survives both transitions. Copying again restarts the timer. */
 bool cui_copy_button(cui_ctx *ui, const char *id_str, const char *text) {
