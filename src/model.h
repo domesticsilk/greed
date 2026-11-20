@@ -20,6 +20,7 @@ typedef struct {
     unsigned connections;
     unsigned seeders;
     int file_count;
+    long long added;           /* first seen by Greed, unix seconds */
     bool is_torrent;
 } Download;
 

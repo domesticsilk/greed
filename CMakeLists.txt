@@ -44,6 +44,7 @@ add_executable(greed
     src/x11.c
     src/links.c
     src/single.c
+    src/history.c
 )
 target_include_directories(greed PRIVATE src vendor/cui ${CMAKE_BINARY_DIR})
 target_compile_options(greed PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
@@ -69,5 +70,10 @@ add_test(NAME contrast COMMAND greed-contrast-check)
 add_executable(greed-links-check tests/links.c)
 target_include_directories(greed-links-check PRIVATE src)
 add_test(NAME links COMMAND greed-links-check)
+
+add_executable(greed-history-check tests/history.c src/history.c src/config.c)
+target_include_directories(greed-history-check PRIVATE src ${JSONC_INCLUDE_DIRS})
+target_link_libraries(greed-history-check PRIVATE ${JSONC_LIBRARIES})
+add_test(NAME history COMMAND greed-history-check)
 
 install(TARGETS greed RUNTIME DESTINATION bin)

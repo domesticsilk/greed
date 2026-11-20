@@ -1111,9 +1111,16 @@ typedef struct cui_table_column {
 
 typedef struct cui_table_sort { int column; bool descending; } cui_table_sort;
 
+typedef struct cui_table_resize {
+    float *widths;             /* per column in points; 0 keeps the column's own width, updated on drag */
+    int count;
+    float min_width;           /* default 48 points */
+} cui_table_resize;
+
 typedef struct cui_table_opts {
     int _;
     cui_table_sort *sort;      /* optional, updated when a sortable header is clicked */
+    cui_table_resize *resize;  /* optional, drag a fixed column's left edge to resize it */
     cui_size height;           /* scrolls when set */
     bool striped;
     bool compact;              /* rows at least 36 points tall instead of 44 */

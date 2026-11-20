@@ -2,6 +2,7 @@
 
 #include "checksum.h"
 #include "config.h"
+#include "history.h"
 #include "logo.h"
 #include "market.h"
 #include "model.h"
@@ -147,6 +148,7 @@ typedef struct {
     char info_error[512];
     bool sidebar_open;
     bool sidebar_dirty;
+    bool col_width_dirty;
     int settings_tab;
     int settings_seen_tab;
     char theme_query[64];
@@ -180,6 +182,46 @@ static void request_remove(App *a);
 static const char *tab_names[TAB_COUNT] = {"All", "Active", "Waiting", "Stopped", "Complete"};
 static const char *tab_icons[TAB_COUNT] = {CUI_ICON_LAYERS, CUI_ICON_ACTIVITY, CUI_ICON_CLOCK,
                                            CUI_ICON_CIRCLE_ALERT, CUI_ICON_CIRCLE_CHECK};
+
+typedef struct {
+    const char *title;
+    const char *mac_title;
+    const char *menu;
+    float width;
+    cui_text_align align;
+} ColumnDef;
+
+static const ColumnDef column_defs[GREED_COL_COUNT] = {
+    [GREED_COL_NAME] = {"NAME", "Name", "Name", 0, CUI_TEXT_START},
+    [GREED_COL_SIZE] = {"SIZE", "Size", "Size", 80, CUI_TEXT_RIGHT},
+    [GREED_COL_PROGRESS] = {"PROGRESS", "Progress", "Progress", 150, CUI_TEXT_START},
+    [GREED_COL_SPEED] = {"SPEED", "Speed", "Speed", 92, CUI_TEXT_RIGHT},
+    [GREED_COL_ETA] = {"ETA", "ETA", "ETA", 64, CUI_TEXT_RIGHT},
+    [GREED_COL_ADDED] = {"ADDED", "Added", "Added", 132, CUI_TEXT_START},
+    [GREED_COL_LOCATION] = {"LOCATION", "Location", "Save location", 170, CUI_TEXT_START},
+    [GREED_COL_CONNECTIONS] = {"CONN.", "Connections", "Connections", 108, CUI_TEXT_RIGHT},
+    [GREED_COL_STATUS] = {"STATUS", "Status", "Status", 104, CUI_TEXT_START},
+};
+
+static void toggle_column(App *a, int col) {
+    if (col == GREED_COL_NAME || col < 0 || col >= GREED_COL_COUNT) return;
+    a->cfg.columns ^= GREED_COL_BIT(col);
+    if (!(a->cfg.columns & GREED_COL_BIT(a->cfg.sort_column))) {
+        a->cfg.sort_column = GREED_COL_ADDED;
+        a->cfg.sort_desc = true;
+    }
+    config_save(&a->cfg);
+}
+
+static void reset_columns(App *a) {
+    a->cfg.columns = GREED_COLUMNS_DEFAULT;
+    memset(a->cfg.col_width, 0, sizeof a->cfg.col_width);
+    if (!(a->cfg.columns & GREED_COL_BIT(a->cfg.sort_column))) {
+        a->cfg.sort_column = GREED_COL_ADDED;
+        a->cfg.sort_desc = true;
+    }
+    config_save(&a->cfg);
+}
 
 static void set_status(App *a, const char *fmt, ...) {
     va_list ap;
@@ -691,6 +733,11 @@ static void notify_send(const char *name) {
     if (pid > 0) waitpid(pid, NULL, 0);
 }
 
+static void download_key(const Download *d, char *out, size_t cap) {
+    if (d->info_hash[0]) snprintf(out, cap, "t:%s", d->info_hash);
+    else snprintf(out, cap, "p:%s/%s", d->dir, d->name);
+}
+
 static void remember_statuses(App *a, const Download *items, int n, bool notify) {
     Known *next = n ? calloc((size_t)n, sizeof *next) : NULL;
     for (int i = 0; i < n; i++) {
@@ -736,6 +783,9 @@ static void poll_engine(App *a) {
         for (size_t i = 0; i < len; i++) {
             Download d;
             if (!download_parse(json_object_array_get_idx(v, i), &d)) continue;
+            char key[HISTORY_KEY_MAX];
+            download_key(&d, key, sizeof key);
+            d.added = history_added(key, (long long)time(NULL));
             if (n == cap) {
                 cap = cap ? cap * 2 : 32;
                 Download *p = realloc(fresh, (size_t)cap * sizeof *fresh);
@@ -773,6 +823,7 @@ static void poll_engine(App *a) {
         }
         json_object_put(st);
     }
+    history_flush();
 }
 
 static void sample_speed(App *a) {
@@ -1097,6 +1148,10 @@ static void remove_download(App *a, Download *d) {
         struct json_object *r = rpc_call(&a->rpc, "aria2.removeDownloadResult", purge);
         if (r) json_object_put(r);
     }
+    char key[HISTORY_KEY_MAX];
+    download_key(d, key, sizeof key);
+    history_forget(key);
+    history_flush();
     set_status(a, "Removed");
     selection_remove(a, d->gid);
     a->last_poll = 0;
@@ -1169,15 +1224,83 @@ static bool contains_ci(const char *haystack, const char *needle) {
     return false;
 }
 
+static void fmt_added(char *out, size_t cap, long long added) {
+    time_t t = (time_t)added;
+    struct tm tm;
+    if (added <= 0 || !localtime_r(&t, &tm) ||
+        !strftime(out, cap, "%Y-%m-%d %H:%M", &tm))
+        snprintf(out, cap, "n/a");
+}
+
+/* Ascending order for the chosen column; descending flips it. */
+static int row_cmp(const App *a, const Download *x, const Download *y) {
+    bool desc = a->cfg.sort_desc;
+    int r = 0;
+    switch (a->cfg.sort_column) {
+    case GREED_COL_SIZE:
+        r = x->total < y->total ? -1 : x->total > y->total;
+        break;
+    case GREED_COL_PROGRESS: {
+        double px = download_progress(x), py = download_progress(y);
+        r = px < py ? -1 : px > py;
+        break;
+    }
+    case GREED_COL_SPEED:
+        r = x->down_speed < y->down_speed ? -1 : x->down_speed > y->down_speed;
+        break;
+    case GREED_COL_ETA: {
+        unsigned long long ex = 0, ey = 0;
+        bool hx = download_eta(x, &ex), hy = download_eta(y, &ey);
+        if (hx != hy) return hx ? -1 : 1;   /* unknown ETA stays last */
+        r = ex < ey ? -1 : ex > ey;
+        break;
+    }
+    case GREED_COL_ADDED:
+        r = x->added < y->added ? -1 : x->added > y->added;
+        break;
+    case GREED_COL_LOCATION:
+        r = strcasecmp(x->dir, y->dir);
+        break;
+    case GREED_COL_CONNECTIONS:
+        r = x->connections < y->connections ? -1 : x->connections > y->connections;
+        break;
+    case GREED_COL_STATUS:
+        r = strcasecmp(download_status_label(x), download_status_label(y));
+        break;
+    default:
+        r = strcasecmp(x->name, y->name);
+        break;
+    }
+    if (r == 0) r = strcasecmp(x->name, y->name);
+    if (r == 0) r = strcmp(x->gid, y->gid);
+    if (r != 0) return desc ? -r : r;
+    return 0;
+}
+
+static void sort_rows(const App *a, int *rows, int n) {
+    for (int i = 1; i < n; i++) {
+        int v = rows[i], j = i - 1;
+        while (j >= 0 && row_cmp(a, &a->items[v], &a->items[rows[j]]) < 0) {
+            rows[j + 1] = rows[j];
+            j--;
+        }
+        rows[j + 1] = v;
+    }
+}
+
 static int collect_rows(App *a, int *rows, int cap) {
     int n = 0;
     for (int i = 0; i < a->count; i++) {
         const Download *d = &a->items[i];
         if (!tab_matches(a->tab, d)) continue;
         if (!contains_ci(d->name, a->filter) && !contains_ci(d->url, a->filter)) continue;
-        if (rows && n < cap) rows[n] = i;
+        if (rows) {
+            if (n >= cap) break;
+            rows[n] = i;
+        }
         n++;
     }
+    if (rows) sort_rows(a, rows, n);
     return n;
 }
 
@@ -1491,6 +1614,9 @@ static void details(App *a, cui_ctx *ui) {
             kv(ui, "Speed", speed);
             kv(ui, "Upload", up);
             kv(ui, "ETA", eta);
+            char added[32];
+            fmt_added(added, sizeof added, d->added);
+            kv(ui, "Added", added);
             char num[32];
             snprintf(num, sizeof num, "%u", d->connections);
             kv(ui, "Connections", num);
@@ -1638,24 +1764,33 @@ static void download_table(App *a, cui_ctx *ui) {
     /* Text scale grows the fixed columns only partly so long names keep room. */
     float col_scale = 1.0f + (active_cfg(a)->text_scale - 1.0f) * 0.6f;
     bool mac = mac_chrome(a);
-    float panels = (a->sidebar_open ? sidebar_width(a) : 0.0f) +
-                   (a->details_open ? 290.0f : 0.0f);
-    bool narrow = cui_viewport_size(ui).x - panels < 700.0f;
-    cui_table_column cols[6];
+    Config *cfg = &a->cfg;
+    cui_table_column cols[GREED_COL_COUNT];
+    int col_of[GREED_COL_COUNT];
+    float widths[GREED_COL_COUNT];
     int ncols = 0;
-    cols[ncols++] = (cui_table_column){mac ? "Name" : "NAME", CUI_FILL, CUI_TEXT_START, false};
-    cols[ncols++] = (cui_table_column){mac ? "Size" : "SIZE", CUI_PX(80 * col_scale),
-                                       CUI_TEXT_RIGHT, false};
-    cols[ncols++] = (cui_table_column){mac ? "Progress" : "PROGRESS",
-                                       CUI_PX(150 * col_scale), CUI_TEXT_START, false};
-    if (!narrow) {
-        cols[ncols++] = (cui_table_column){mac ? "Speed" : "SPEED", CUI_PX(92 * col_scale),
-                                           CUI_TEXT_RIGHT, false};
-        cols[ncols++] = (cui_table_column){mac ? "ETA" : "ETA", CUI_PX(64 * col_scale),
-                                           CUI_TEXT_RIGHT, false};
+    int sort_visual = -1;
+    for (int c = 0; c < GREED_COL_COUNT; c++) {
+        if (c != GREED_COL_NAME && !(cfg->columns & GREED_COL_BIT(c))) continue;
+        const ColumnDef *def = &column_defs[c];
+        if (c == cfg->sort_column) sort_visual = ncols;
+        col_of[ncols] = c;
+        if (c == GREED_COL_NAME) {
+            widths[ncols] = 0;
+            cols[ncols++] = (cui_table_column){mac ? def->mac_title : def->title, CUI_FILL,
+                                               def->align, true};
+        } else {
+            int base = cfg->col_width[c] > 0 ? cfg->col_width[c] : (int)def->width;
+            widths[ncols] = base * col_scale;
+            cols[ncols++] = (cui_table_column){mac ? def->mac_title : def->title,
+                                               CUI_PX(widths[ncols - 1]), def->align, true};
+        }
     }
-    cols[ncols++] = (cui_table_column){mac ? "Status" : "STATUS", CUI_PX(104 * col_scale),
-                                       CUI_TEXT_START, false};
+    float widths_before[GREED_COL_COUNT];
+    memcpy(widths_before, widths, sizeof widths);
+    cui_table_sort sort = {sort_visual, cfg->sort_desc};
+    cui_table_resize resize = {.widths = widths, .count = ncols,
+                               .min_width = 48.0f * col_scale};
     double speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
     float step = 1.0f - expf(-cui_delta_time(ui) * 12.0f * speed);
     unsigned filter_hash = hash_text(a->filter);
@@ -1676,7 +1811,8 @@ static void download_table(App *a, cui_ctx *ui) {
         if (a->drag_moved) drag_selection(a, mp);
     }
     cui_table(ui, "downloads", cols, ncols, .height = CUI_FILL, .striped = true,
-              .compact = active_cfg(a)->spacing < 0.96f, .selectable = true) {
+              .compact = active_cfg(a)->spacing < 0.96f, .selectable = true, .sort = &sort,
+              .resize = &resize) {
         a->row_n = 0;
         for (int r = 0; r < n; r++) {
             Download *d = &a->items[rows[r]];
@@ -1771,63 +1907,108 @@ static void download_table(App *a, cui_ctx *ui) {
                 a->last_click = now;
                 snprintf(a->last_click_gid, sizeof a->last_click_gid, "%s", d->gid);
             }
-            cui_table_cell(ui); {
-                cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-                    cui_box(ui, .width = CUI_PX(8), .height = CUI_PX(8), .radius = 4,
-                            .bg = status_color(d));
-                    cui_text(ui, d->name, .width = CUI_FILL, .nowrap = true);
+            for (int c = 0; c < ncols; c++) {
+                cui_table_cell(ui);
+                switch (col_of[c]) {
+                case GREED_COL_NAME:
+                    cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                        cui_box(ui, .width = CUI_PX(8), .height = CUI_PX(8), .radius = 4,
+                                .bg = status_color(d));
+                        cui_text(ui, d->name, .width = CUI_FILL, .nowrap = true);
+                    }
+                    break;
+                case GREED_COL_SIZE: {
+                    char size[32];
+                    if (d->total) fmt_bytes(size, sizeof size, d->total);
+                    else snprintf(size, sizeof size, "n/a");
+                    cui_text(ui, size, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
+                             .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
+                    break;
                 }
-            }
-            cui_table_cell(ui); {
-                char size[32];
-                if (d->total) fmt_bytes(size, sizeof size, d->total);
-                else snprintf(size, sizeof size, "n/a");
-                cui_text(ui, size, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
-                         .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
-            }
-            cui_table_cell(ui); {
-                double p = download_progress(d);
-                char pct[16];
-                snprintf(pct, sizeof pct, "%.0f%%", p * 100.0);
-                cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-                    cui_progress(ui, (float)p, .height = 6, .width = CUI_FILL, .tone = status_tone(d));
-                    cui_text(ui, pct, .size = 11, .color = CUI_COLOR_TEXT_MUTED, .nowrap = true,
-                             .width = CUI_PX(44 * col_scale), .align = CUI_TEXT_RIGHT,
-                             .tabular = true);
+                case GREED_COL_PROGRESS: {
+                    double p = download_progress(d);
+                    char pct[16];
+                    snprintf(pct, sizeof pct, "%.0f%%", p * 100.0);
+                    cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                        cui_progress(ui, (float)p, .height = 6, .width = CUI_FILL,
+                                     .tone = status_tone(d));
+                        cui_text(ui, pct, .size = 11, .color = CUI_COLOR_TEXT_MUTED, .nowrap = true,
+                                 .width = CUI_PX(44 * col_scale), .align = CUI_TEXT_RIGHT,
+                                 .tabular = true);
+                    }
+                    break;
                 }
-            }
-            if (!narrow) {
-                cui_table_cell(ui); {
+                case GREED_COL_SPEED: {
                     char speed[32];
                     if (!strcmp(d->status, "active")) fmt_speed(speed, sizeof speed, d->down_speed);
                     else snprintf(speed, sizeof speed, "n/a");
                     cui_text(ui, speed, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
                              .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
+                    break;
                 }
-                cui_table_cell(ui); {
+                case GREED_COL_ETA: {
                     char eta[32];
                     unsigned long long secs;
                     if (download_eta(d, &secs)) fmt_eta(eta, sizeof eta, secs);
                     else snprintf(eta, sizeof eta, "n/a");
                     cui_text(ui, eta, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
                              .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
+                    break;
                 }
-            }
-            cui_table_cell(ui); {
-                if (!strcmp(download_status_label(d), "Metadata")) {
-                    cui_row(ui, .gap = 6, .align = CUI_ALIGN_CENTER) {
-                        cui_spinner(ui, 12);
-                        cui_text(ui, "Metadata", .size = 12, .color = status_color(d),
-                                 .nowrap = true);
-                    }
-                } else {
-                    cui_text(ui, download_status_label(d), .size = 12, .color = status_color(d),
+                case GREED_COL_ADDED: {
+                    char added[32];
+                    fmt_added(added, sizeof added, d->added);
+                    cui_text(ui, added, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
+                             .nowrap = true, .tabular = true);
+                    break;
+                }
+                case GREED_COL_LOCATION:
+                    cui_text(ui, d->dir, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
                              .nowrap = true);
+                    break;
+                case GREED_COL_CONNECTIONS: {
+                    char num[16];
+                    snprintf(num, sizeof num, "%u", d->connections);
+                    cui_text(ui, num, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
+                             .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
+                    break;
+                }
+                case GREED_COL_STATUS:
+                    if (!strcmp(download_status_label(d), "Metadata")) {
+                        cui_row(ui, .gap = 6, .align = CUI_ALIGN_CENTER) {
+                            cui_spinner(ui, 12);
+                            cui_text(ui, "Metadata", .size = 12, .color = status_color(d),
+                                     .nowrap = true);
+                        }
+                    } else {
+                        cui_text(ui, download_status_label(d), .size = 12,
+                                 .color = status_color(d), .nowrap = true);
+                    }
+                    break;
                 }
             }
         }
     }
     a->suppress_click = false;
+    for (int c = 0; c < ncols; c++) {
+        if (col_of[c] == GREED_COL_NAME || widths[c] == widths_before[c]) continue;
+        int base = (int)(widths[c] / col_scale + 0.5f);
+        if (base < 48) base = 48;
+        if (base > 900) base = 900;
+        cfg->col_width[col_of[c]] = base;
+        a->col_width_dirty = true;
+    }
+    if (a->col_width_dirty && !cui_mouse_down(ui, CUI_MOUSE_LEFT)) {
+        a->col_width_dirty = false;
+        config_save(cfg);
+    }
+    if (sort.column != sort_visual || sort.descending != cfg->sort_desc) {
+        if (sort.column >= 0 && sort.column < ncols) {
+            cfg->sort_column = col_of[sort.column];
+            cfg->sort_desc = sort.descending;
+            config_save(cfg);
+        }
+    }
 }
 
 static bool disk_usage(const char *path, unsigned long long *free_bytes,
@@ -2182,6 +2363,17 @@ static void content(App *a, cui_ctx *ui) {
             else snprintf(shown, sizeof shown, "%d shown", collect_rows(a, NULL, 0));
             cui_text(ui, shown, .size = 12,
                      .color = a->sel_count > 1 ? CUI_COLOR_ACCENT : CUI_COLOR_TEXT_MUTED);
+            cui_menu(ui, "Columns", .icon = CUI_ICON_SLIDERS_HORIZONTAL, .icon_only = true) {
+                for (int c = 0; c < GREED_COL_COUNT; c++) {
+                    bool on = (a->cfg.columns & GREED_COL_BIT(c)) != 0;
+                    if (cui_menu_item(ui, column_defs[c].menu, .checked = on,
+                                      .disabled = c == GREED_COL_NAME))
+                        toggle_column(a, c);
+                }
+                cui_menu_separator(ui);
+                if (cui_menu_item(ui, "Reset columns", .icon = CUI_ICON_ROTATE_CCW))
+                    reset_columns(a);
+            }
             if (cui_icon_button(ui, CUI_ICON_PAUSE, .size = CUI_SIZE_SM, .tooltip = "Pause",
                                 .disabled = !selection_can_pause(a)))
                 pause_selection(a);
@@ -3843,6 +4035,7 @@ int ui_run(const char *initial_links) {
                                          .app_id = "greed"},
                          frame, a);
 
+    history_flush();
     frame_shutdown(&a->frame);
     free(a->items);
     free(a->known);

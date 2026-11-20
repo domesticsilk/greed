@@ -19,6 +19,9 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
   (All/Active/Waiting/Stopped/Complete), a searchable download table with progress, speed, ETA
   and status, a per-download details pane and a live transfer sparkline in the sidebar. Drag the
   divider to resize the sidebar from 140 to 420px; transfer speeds also stay in the status bar
+- **Table columns**: the Columns menu shows or hides Size, Progress, Speed, ETA, Added,
+  Location, Connections and Status; click a header to sort by that column, and drag a column
+  divider to resize the column to its right. Sort order and widths persist across restarts
 - **Liquid Glass**: an optional marketplace theme, in light and dark, that switches to
   macOS-style chrome: a unified toolbar, traffic lights, a resizable sidebar (220px by default),
   sentence-case headers and optical glass on the toolbar, sidebar and dialog chrome. Other
@@ -219,6 +222,10 @@ palette.
   "font": "default",
   "logo_app_font": false,
   "sidebar_width": 0,
+  "columns": 319,
+  "sort_column": 5,
+  "sort_desc": true,
+  "col_widths": [0, 0, 0, 0, 0, 0, 0, 0, 0],
   "text_scale": 1.0,
   "spacing": 1.0,
   "motion_speed": 1.0,
@@ -232,6 +239,12 @@ device; `logo_app_font` draws the titlebar wordmark in the app font instead of t
 220 with macOS chrome). `text_scale` ranges from 0.85 to 1.3 and `spacing` from 0.9 to 1.12.
 The same values can be changed in Settings > Appearance, where the font list is searchable and
 the sidebar width also has a slider.
+
+`columns` is a bitmask of the visible table columns: Name 1, Size 2, Progress 4, Speed 8, ETA 16,
+Added 32, Location 64, Connections 128 and Status 256. Name is always visible. `sort_column`
+uses the same order (5 is Added) and `sort_desc` flips the direction. `col_widths` holds one
+width per column in points at text scale 1; 0 keeps the column's default and 48 to 900 is the
+accepted range. The Columns menu, header clicks and divider drags write the same values.
 
 The limits are in KB/s; 0 means unlimited. The aria2 session is saved next to it as
 `aria2.session`. The same directory and format are used by the earlier Rust version.

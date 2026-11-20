@@ -9701,6 +9701,12 @@ struct cui_table_build {
     struct cui_table_build *prev;
 };
 
+typedef struct {
+    bool active;
+    int column;
+    float start_x, start_w;
+} cui__table_resize;
+
 static void cui__table_close_row(cui_ctx *ui, struct cui_table_build *t) {
     if (!t->in_row) return;
     if (t->col > 0) cui__close(ui);   /* last cell */
@@ -9724,6 +9730,68 @@ bool cui_table_begin_ex(cui_ctx *ui, const char *id_str, const cui_table_column 
     t->compact = o->compact; t->striped = o->striped; t->selectable = o->selectable;
     t->prev = ui->building.table;
     ui->building.table = t;
+    bool resizing = false;
+    int grab = -1;
+    float grab_edge = 0, grab_y = 0, grab_h = 0;
+    cui_table_resize *rz = o->resize;
+    if (rz && rz->widths && rz->count >= ncols && ncols > 0) {
+        cui__table_resize *rs = cui_state(ui, id ^ 0x5A17E5u, sizeof *rs);
+        if (rs->active) {
+            resizing = true;
+            cui__set_cursor(ui, CUI_CURSOR_RESIZE_EW);
+            if (rs->column >= 0 && rs->column < ncols) {
+                /* Dragging a column's left edge trades width with the column before it,
+                 * so the edge stays under the pointer. */
+                float w = rs->start_w - (ui->mx - rs->start_x);
+                float minw = rz->min_width > 0 ? rz->min_width : 48;
+                if (w < minw) w = minw;
+                if (w > 900) w = 900;
+                rz->widths[rs->column] = w;
+            }
+            if (!ui->mdown[CUI_MOUSE_LEFT]) rs->active = false;
+        } else {
+            cui_rect tr = cui__prev_rect(ui, id);
+            bool in_table = ui->mx >= tr.x && ui->mx <= tr.x + tr.w &&
+                            ui->my >= tr.y && ui->my <= tr.y + tr.h;
+            for (int k = 0; k < ncols; k++) {
+                if (cols[k].width.kind != CUI_SIZE_FIXED) continue;
+                cui_id hid = cui__hash(&k, sizeof k, id ^ 0x4EADu);
+                cui_rect hr = cui__prev_rect(ui, hid);
+                if (hr.w <= 0) continue;
+                float edge = hr.x;
+                bool in_head = in_table && ui->my >= hr.y - 2 && ui->my <= hr.y + hr.h + 2;
+                if (in_head && edge >= tr.x && edge <= tr.x + tr.w)
+                    cui_overlay_rect(ui, (cui_rect){edge - 0.5f, hr.y + 8, 1, hr.h - 16}, 0,
+                                     cui_alpha(CUI_C(ui, FOREGROUND), 0.18f), CUI_TRANSPARENT,
+                                     0);
+                if (in_head && ui->mx >= edge - 7 && ui->mx <= edge + 7) {
+                    grab = k;
+                    grab_edge = edge;
+                    grab_y = hr.y;
+                    grab_h = hr.h;
+                }
+            }
+            if (grab >= 0) {
+                cui__set_cursor(ui, CUI_CURSOR_RESIZE_EW);
+                cui_overlay_rect(ui, (cui_rect){grab_edge - 1, grab_y + 4, 2, grab_h - 8}, 0,
+                                 CUI_C(ui, ACCENT), CUI_TRANSPARENT, 0);
+                if (ui->mpressed[CUI_MOUSE_LEFT]) {
+                    rs->active = true;
+                    rs->column = grab;
+                    rs->start_x = ui->mx;
+                    rs->start_w = rz->widths[grab] > 0 ? rz->widths[grab] : cols[grab].width.value;
+                    resizing = true;
+                }
+            }
+        }
+        cui_table_column *eff = cui__frame_alloc(ui, (size_t)ncols * sizeof *eff);
+        memcpy(eff, cols, (size_t)ncols * sizeof *eff);
+        for (int k = 0; k < ncols; k++)
+            if (eff[k].width.kind == CUI_SIZE_FIXED && rz->widths[k] > 0)
+                eff[k].width = CUI_PX(rz->widths[k]);
+        cols = eff;
+    }
+    t->cols = cols;
     cui_push_id(ui, id_str);
     int wrap = cui__node_new(ui, id);
     cui_node *wn = &ui->nodes[wrap];
@@ -9767,7 +9835,7 @@ bool cui_table_begin_ex(cui_ctx *ui, const char *id_str, const cui_table_column 
         cui_id hid = cui__hash(&k, sizeof k, id ^ 0x4EADu);
         cui_interact r;
         memset(&r, 0, sizeof r);
-        if (c->sortable && o->sort) {
+        if (c->sortable && o->sort && !resizing) {
             r = cui__interact(ui, hid, CUI_IF_FOCUSABLE);
             if (r.clicked) {
                 if (o->sort->column == k) o->sort->descending = !o->sort->descending;
@@ -9783,7 +9851,7 @@ bool cui_table_begin_ex(cui_ctx *ui, const char *id_str, const cui_table_column 
         cn->text_align = (uint8_t)c->align;
         if (c->sortable && o->sort) {
             cui__mark_interactive(ui, cell, CUI_IF_FOCUSABLE);
-            if (r.hovered) cui__set_cursor(ui, CUI_CURSOR_HAND);
+            if (r.hovered && grab < 0) cui__set_cursor(ui, CUI_CURSOR_HAND);
         }
         cui__open(ui, cell);
         bool sorted = o->sort && o->sort->column == k && c->sortable;

@@ -76,6 +76,9 @@ void config_defaults(Config *c) {
     c->text_scale = 1.0f;
     c->spacing = 1.0f;
     c->vim_mode = false;
+    c->columns = GREED_COLUMNS_DEFAULT;
+    c->sort_column = GREED_COL_ADDED;
+    c->sort_desc = true;
 }
 
 static const char *jstr(struct json_object *v, const char *key) {
@@ -152,6 +155,22 @@ void config_load(Config *c) {
             if (c->spacing < 0.9f) c->spacing = 0.9f;
             if (c->spacing > 1.12f) c->spacing = 1.12f;
             c->vim_mode = jbool(v, "vim_mode", c->vim_mode);
+            c->columns = (unsigned)jint(v, "columns", (int)c->columns);
+            c->columns &= GREED_COL_BIT(GREED_COL_COUNT) - 1u;
+            c->columns |= GREED_COL_BIT(GREED_COL_NAME);
+            c->sort_column = jint(v, "sort_column", c->sort_column);
+            if (c->sort_column < 0 || c->sort_column >= GREED_COL_COUNT)
+                c->sort_column = GREED_COL_ADDED;
+            c->sort_desc = jbool(v, "sort_desc", c->sort_desc);
+            struct json_object *widths;
+            if (json_object_object_get_ex(v, "col_widths", &widths) &&
+                json_object_is_type(widths, json_type_array)) {
+                int len = (int)json_object_array_length(widths);
+                for (int i = 0; i < len && i < GREED_COL_COUNT; i++) {
+                    int w = json_object_get_int(json_object_array_get_idx(widths, i));
+                    if (w >= 48 && w <= 900) c->col_width[i] = w;
+                }
+            }
             json_object_put(v);
         }
     }
@@ -183,6 +202,13 @@ bool config_save(const Config *c) {
     json_object_object_add(v, "text_scale", json_object_new_double(c->text_scale));
     json_object_object_add(v, "spacing", json_object_new_double(c->spacing));
     json_object_object_add(v, "vim_mode", json_object_new_boolean(c->vim_mode));
+    json_object_object_add(v, "columns", json_object_new_int((int)c->columns));
+    json_object_object_add(v, "sort_column", json_object_new_int(c->sort_column));
+    json_object_object_add(v, "sort_desc", json_object_new_boolean(c->sort_desc));
+    struct json_object *widths = json_object_new_array();
+    for (int i = 0; i < GREED_COL_COUNT; i++)
+        json_object_array_add(widths, json_object_new_int(c->col_width[i]));
+    json_object_object_add(v, "col_widths", widths);
     const char *text = json_object_to_json_string_ext(v, JSON_C_TO_STRING_PRETTY);
     FILE *f = fopen(config_path(), "w");
     bool ok = false;
