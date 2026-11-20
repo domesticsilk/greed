@@ -1,0 +1,26 @@
+{
+  "name": "Ultraviolet",
+  "dark": true,
+  "bg": "#100e17",
+  "surface": "#17131f",
+  "raised": "#211a2c",
+  "muted": "#0b0910",
+  "text": "#ece7f7",
+  "dim": "#a79cbd",
+  "border": "#302741",
+  "accent": "#a78bfa",
+  "accent_strong": "#bda6ff",
+  "accent_fg": "#120a26",
+  "danger": "#ff7a90",
+  "success": "#7ee2a8",
+  "warning": "#f0c674",
+  "info": "#7cc7ff",
+  "series": [
+    "#a78bfa",
+    "#7cc7ff",
+    "#7ee2a8",
+    "#f0c674",
+    "#ff7a90",
+    "#c4b5fd"
+  ]
+}

@@ -39,6 +39,9 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
 - **In-app updates**: Settings → Updates checks the latest GitHub release, downloads the
   AppImage and replaces the running copy (or installs it to `~/.local/bin/greed`), then offers
   a restart
+- **Marketplace**: optional engines, tools and theme packs, each downloaded and checked against
+  its SHA-256 before it is installed; yt-dlp adds a video resolver that picks a single-file
+  stream and hands the direct URL to aria2
 - **Accessibility**: text meets WCAG AA on every theme surface, focus rings keep 3:1
   non-text contrast, and the whole app works from the keyboard
 - **Clipboard monitoring**: offers a toast when a link is copied (toggleable)
@@ -136,6 +139,30 @@ Keyboard shortcuts:
 
 `Esc` clears the selection or closes the open dialog. Settings scrolls with `PgUp`/`PgDn`.
 
+## Marketplace
+
+The cart button in the title bar (or the command palette) opens the Marketplace. It lists
+optional engines, tools and theme packs from
+`https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/catalog.json`, with a
+built-in copy when the network or the catalog is unavailable.
+
+- Every asset is downloaded to a temporary file, checked against the `sha256` in the catalog,
+  and only then moved into place.
+- Installs go to `~/.local/share/greed/` (or `$XDG_DATA_HOME/greed/`): themes under `themes/`,
+  tools under `tools/<id>/`. Nothing outside that folder is written.
+- The catalog is cached as `~/.local/share/greed/marketplace/catalog.json` and installed items
+  are tracked in `installed.json` next to it. Remove deletes the installed file.
+- yt-dlp is the first engine. With it installed, the Add dialog offers "Resolve video pages
+  with yt-dlp": Greed asks yt-dlp for the best single-file progressive stream and adds the
+  direct URL to aria2 with the headers that stream needs. Streams that need merging are not
+  offered yet.
+- Theme packs use the same JSON format as `themes/*.json`; after install they appear in
+  Settings → Appearance next to the 76 built-in themes.
+
+`marketplace/catalog.json` documents the catalog format: each item has an `id`, a `type`
+(`engine`, `tool` or `theme`), a version, an asset URL, a SHA-256 and an optional preview
+palette.
+
 ## Configuration
 
 `~/.config/greed/config.json` (or `$XDG_CONFIG_HOME/greed/config.json`):
@@ -178,7 +205,10 @@ src/model.c    aria2 JSON parsing and formatters
 src/rpc.c      JSON-RPC over libcurl, aria2 discovery/spawn, base64
 src/config.c   config file
 src/cli.c      subcommands
+src/market.c   marketplace catalog, checksum-verified installs
+src/ytdlp.c    yt-dlp resolver and aria2 handoff
 src/x11.c      frameless window, drag/resize, maximize, minimize
+marketplace/   catalog and theme pack assets
 vendor/cui/    CUI 1.4.0 amalgamation (MIT)
 vendor/aria2/  aria2c + libaria2 (GPL-2.0)
 ```

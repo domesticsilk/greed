@@ -37,6 +37,7 @@ bool config_save(const Config *c);
 int config_schedules_load(GreedScheduled *out, int cap);
 bool config_schedules_save(const GreedScheduled *items, int count);
 const char *config_dir(void);
+const char *data_dir(void);
 const char *config_path(void);
 void config_expand_tilde(char *path);
 

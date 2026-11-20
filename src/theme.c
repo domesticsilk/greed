@@ -1,8 +1,16 @@
 /* Generated theme data: palettes from the published editor colour schemes. */
 #include "theme.h"
 
+#include "config.h"
+
+#include <dirent.h>
+#include <json-c/json.h>
+#include <limits.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 const GreedTheme greed_themes[] = {
     {"Dark Mono", true, 0x0a0a0a, 0x101010, 0x171717, 0x0d0d0d, 0xfafafa, 0xa3a3a3,
@@ -163,10 +171,155 @@ const GreedTheme greed_themes[] = {
 
 const int greed_theme_count = (int)(sizeof greed_themes / sizeof greed_themes[0]);
 
+#define GREED_MAX_EXTERNAL_THEMES 32
+
+static GreedTheme external[GREED_MAX_EXTERNAL_THEMES];
+static char external_names[GREED_MAX_EXTERNAL_THEMES][64];
+static int external_count;
+static bool external_loaded;
+
+static const char *jstr(struct json_object *v, const char *key) {
+    struct json_object *o = NULL;
+    if (!v || !json_object_object_get_ex(v, key, &o)) return NULL;
+    return json_object_get_string(o);
+}
+
+static unsigned color_value(const char *s, unsigned fallback) {
+    if (!s || !*s) return fallback;
+    if (*s == '#') s++;
+    else if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
+    char *end = NULL;
+    unsigned long v = strtoul(s, &end, 16);
+    if (end == s || v > 0xffffff) return fallback;
+    return (unsigned)v;
+}
+
+static unsigned jcolor(struct json_object *v, const char *key, unsigned fallback) {
+    return color_value(jstr(v, key), fallback);
+}
+
+static bool theme_name_taken(const char *name) {
+    for (int i = 0; i < greed_theme_count; i++)
+        if (!strcmp(greed_themes[i].name, name)) return true;
+    for (int i = 0; i < external_count; i++)
+        if (!strcmp(external[i].name, name)) return true;
+    return false;
+}
+
+static void load_theme_file(const char *path) {
+    if (external_count >= GREED_MAX_EXTERNAL_THEMES) return;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > 64 * 1024) {
+        fclose(f);
+        return;
+    }
+    char *text = malloc((size_t)size + 1);
+    if (!text) {
+        fclose(f);
+        return;
+    }
+    size_t got = fread(text, 1, (size_t)size, f);
+    text[got] = 0;
+    fclose(f);
+
+    struct json_object *root = json_tokener_parse(text);
+    free(text);
+    if (!root) return;
+
+    const char *name = jstr(root, "name");
+    if (!name || !name[0] || strlen(name) >= sizeof external_names[0] ||
+        theme_name_taken(name)) {
+        json_object_put(root);
+        return;
+    }
+
+    GreedTheme t = {0};
+    snprintf(external_names[external_count], sizeof external_names[0], "%s", name);
+    t.name = external_names[external_count];
+    t.dark = true;
+    struct json_object *dark = NULL;
+    if (json_object_object_get_ex(root, "dark", &dark)) t.dark = json_object_get_boolean(dark);
+    t.bg = jcolor(root, "bg", 0x101010);
+    t.surface = jcolor(root, "surface", 0x161616);
+    t.raised = jcolor(root, "raised", 0x202020);
+    t.muted = jcolor(root, "muted", 0x121212);
+    t.text = jcolor(root, "text", 0xf2f2f2);
+    t.dim = jcolor(root, "dim", 0xa0a0a0);
+    t.border = jcolor(root, "border", 0x303030);
+    t.accent = jcolor(root, "accent", 0x9a8cff);
+    t.accent_strong = jcolor(root, "accent_strong", t.accent);
+    t.accent_fg = jcolor(root, "accent_fg", 0x101010);
+    t.danger = jcolor(root, "danger", 0xf87171);
+    t.success = jcolor(root, "success", 0x8ee6a8);
+    t.warning = jcolor(root, "warning", 0xf7c96b);
+    t.info = jcolor(root, "info", 0x7fd4f0);
+
+    struct json_object *series = NULL;
+    if (json_object_object_get_ex(root, "series", &series) &&
+        json_object_is_type(series, json_type_array)) {
+        for (int i = 0; i < 6; i++) {
+            const char *c = NULL;
+            if ((size_t)i < json_object_array_length(series))
+                c = json_object_get_string(json_object_array_get_idx(series, i));
+            t.series[i] = color_value(c, t.accent);
+        }
+    } else {
+        for (int i = 0; i < 6; i++) t.series[i] = t.accent;
+    }
+    external[external_count++] = t;
+    json_object_put(root);
+}
+
+void greed_theme_reload(void) {
+    external_count = 0;
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof dir, "%s/themes", data_dir());
+    DIR *d = opendir(dir);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL && external_count < GREED_MAX_EXTERNAL_THEMES) {
+            size_t n = strlen(e->d_name);
+            if (n < 6 || strcasecmp(e->d_name + n - 5, ".json")) continue;
+            char path[PATH_MAX * 2];
+            snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+            load_theme_file(path);
+        }
+        closedir(d);
+    }
+    external_loaded = true;
+}
+
+int greed_theme_total(void) {
+    if (!external_loaded) greed_theme_reload();
+    return greed_theme_count + external_count;
+}
+
+const GreedTheme *greed_theme_at(int index) {
+    if (!external_loaded) greed_theme_reload();
+    if (index < 0) return &greed_themes[0];
+    if (index < greed_theme_count) return &greed_themes[index];
+    index -= greed_theme_count;
+    if (index < external_count) return &external[index];
+    return &greed_themes[0];
+}
+
+bool greed_theme_exists(const char *name) {
+    if (!name) return false;
+    if (!external_loaded) greed_theme_reload();
+    for (int i = 0; i < greed_theme_total(); i++)
+        if (!strcmp(greed_theme_at(i)->name, name)) return true;
+    return false;
+}
+
 const GreedTheme *greed_theme_find(const char *name) {
+    if (name && !external_loaded) greed_theme_reload();
     if (name)
-        for (int i = 0; i < greed_theme_count; i++)
-            if (!strcmp(greed_themes[i].name, name)) return &greed_themes[i];
+        for (int i = 0; i < greed_theme_total(); i++)
+            if (!strcmp(greed_theme_at(i)->name, name)) return greed_theme_at(i);
     return &greed_themes[0];
 }
 

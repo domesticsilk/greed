@@ -18,6 +18,12 @@ typedef struct {
 extern const GreedTheme greed_themes[];
 extern const int greed_theme_count;
 
+/* Built-in themes plus the JSON files in <data_dir>/themes. */
+int greed_theme_total(void);
+const GreedTheme *greed_theme_at(int index);
+bool greed_theme_exists(const char *name);
+void greed_theme_reload(void);
+
 const GreedTheme *greed_theme_find(const char *name);
 /* motion_speed: 1 = normal, higher is faster (CUI's motion token is slower-is-higher).
  * text_scale multiplies every text size; spacing scales control heights. */

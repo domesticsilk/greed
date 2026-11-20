@@ -1,0 +1,154 @@
+{
+  "schema": 1,
+  "updated": "2026-11-20",
+  "items": [
+    {
+      "id": "yt-dlp",
+      "type": "engine",
+      "name": "yt-dlp",
+      "category": "Video",
+      "version": "2026.10.26",
+      "summary": "Download video and audio from thousands of sites.",
+      "description": "Adds a resolver to the Add dialog. Paste a video page and Greed asks yt-dlp for the best single-file stream, then downloads it with aria2 using the right headers. Single-file streams only for now.",
+      "source": "github.com/yt-dlp/yt-dlp",
+      "asset": {
+        "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux",
+        "sha256": "767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795",
+        "size": 41166968,
+        "exec": "yt-dlp"
+      },
+      "preview": {
+        "bg": "#16161e",
+        "surface": "#1a1b26",
+        "accent": "#7aa2f7",
+        "text": "#c0caf5"
+      }
+    },
+    {
+      "id": "eldritch",
+      "type": "theme",
+      "name": "Eldritch",
+      "category": "Theme",
+      "version": "1.0.0",
+      "summary": "A deep teal accent on cold slate. Easy on the eyes at night.",
+      "description": "A deep teal accent on cold slate. Easy on the eyes at night. Installs as a theme you can pick in Settings, Appearance.",
+      "source": "greed theme pack",
+      "asset": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/eldritch.json",
+        "sha256": "f8e7ffbaaf96ef6d0cd9e54830429bca049386a2a81ef2f027fd4a26fa5845ed",
+        "size": 472
+      },
+      "preview": {
+        "bg": "#101418",
+        "surface": "#171d23",
+        "accent": "#3fd0a8",
+        "text": "#e6edf3"
+      }
+    },
+    {
+      "id": "ember",
+      "type": "theme",
+      "name": "Ember",
+      "category": "Theme",
+      "version": "1.0.0",
+      "summary": "Warm ember orange over charcoal. A quieter take on a dark room.",
+      "description": "Warm ember orange over charcoal. A quieter take on a dark room. Installs as a theme you can pick in Settings, Appearance.",
+      "source": "greed theme pack",
+      "asset": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/ember.json",
+        "sha256": "3adf4556c6a6d36f953ca51de998f6bd41f522001db19b0ab8bf1e28936e3210",
+        "size": 469
+      },
+      "preview": {
+        "bg": "#141010",
+        "surface": "#1b1515",
+        "accent": "#ff8a5c",
+        "text": "#f2e9e4"
+      }
+    },
+    {
+      "id": "sea-glass",
+      "type": "theme",
+      "name": "Sea Glass",
+      "category": "Theme",
+      "version": "1.0.0",
+      "summary": "A light theme with a teal accent and soft green-grey surfaces.",
+      "description": "A light theme with a teal accent and soft green-grey surfaces. Installs as a theme you can pick in Settings, Appearance.",
+      "source": "greed theme pack",
+      "asset": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/sea-glass.json",
+        "sha256": "bdf1dc4b32d49c3a4c6812e66be6eb47d5b70c13e11bb7339285bd7aa6c8f090",
+        "size": 474
+      },
+      "preview": {
+        "bg": "#f4f7f6",
+        "surface": "#ffffff",
+        "accent": "#0f766e",
+        "text": "#15201d"
+      }
+    },
+    {
+      "id": "paper-ink",
+      "type": "theme",
+      "name": "Paper & Ink",
+      "category": "Theme",
+      "version": "1.0.0",
+      "summary": "Warm paper, dark ink, and a burnt sienna accent.",
+      "description": "Warm paper, dark ink, and a burnt sienna accent. Installs as a theme you can pick in Settings, Appearance.",
+      "source": "greed theme pack",
+      "asset": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/paper-ink.json",
+        "sha256": "45abf840d84fe87d312826fbe7e3196802231c9ad4b130cdd41e2b1b08ef3de9",
+        "size": 476
+      },
+      "preview": {
+        "bg": "#faf8f2",
+        "surface": "#fffdf8",
+        "accent": "#8a4b1f",
+        "text": "#1c1a16"
+      }
+    },
+    {
+      "id": "rose-quartz",
+      "type": "theme",
+      "name": "Rose Quartz",
+      "category": "Theme",
+      "version": "1.0.0",
+      "summary": "A soft light theme with a deep rose accent.",
+      "description": "A soft light theme with a deep rose accent. Installs as a theme you can pick in Settings, Appearance.",
+      "source": "greed theme pack",
+      "asset": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/rose-quartz.json",
+        "sha256": "587ff4e9c5dd5e26d4a3781e5ef938c500e015ee4fa2c5e74e128f029b1942ae",
+        "size": 476
+      },
+      "preview": {
+        "bg": "#fbf4f5",
+        "surface": "#fff9fa",
+        "accent": "#a83256",
+        "text": "#241a1d"
+      }
+    },
+    {
+      "id": "ultraviolet",
+      "type": "theme",
+      "name": "Ultraviolet",
+      "category": "Theme",
+      "version": "1.0.0",
+      "summary": "Violet accent on near-black. Bright without being loud.",
+      "description": "Violet accent on near-black. Bright without being loud. Installs as a theme you can pick in Settings, Appearance.",
+      "source": "greed theme pack",
+      "asset": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/ultraviolet.json",
+        "sha256": "256715b4f90ab12bff77db8c9d1c52f9367aa9c84cebb7dd04f2c109baa78056",
+        "size": 475
+      },
+      "preview": {
+        "bg": "#100e17",
+        "surface": "#17131f",
+        "accent": "#a78bfa",
+        "text": "#ece7f7"
+      }
+    }
+  ]
+}

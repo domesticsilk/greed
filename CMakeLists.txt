@@ -19,6 +19,16 @@ target_include_directories(cui_vendor PUBLIC vendor/cui)
 target_compile_options(cui_vendor PRIVATE -w)
 target_link_libraries(cui_vendor PUBLIC ${X11_LIBRARIES} Xext ${CMAKE_DL_LIBS} m Threads::Threads)
 
+# The marketplace fallback ships inside the binary.
+file(READ "${CMAKE_SOURCE_DIR}/marketplace/catalog.json" GREED_CATALOG_JSON)
+string(REPLACE "\\" "\\\\" GREED_CATALOG_JSON "${GREED_CATALOG_JSON}")
+string(REPLACE "\"" "\\\"" GREED_CATALOG_JSON "${GREED_CATALOG_JSON}")
+string(REPLACE "\n" "\\n" GREED_CATALOG_JSON "${GREED_CATALOG_JSON}")
+file(WRITE "${CMAKE_BINARY_DIR}/catalog_data.h"
+     "static const char *fallback_catalog = \"${GREED_CATALOG_JSON}\";\n")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_SOURCE_DIR}/marketplace/catalog.json")
+
 add_executable(greed
     src/main.c
     src/ui.c
@@ -28,10 +38,12 @@ add_executable(greed
     src/config.c
     src/checksum.c
     src/theme.c
+    src/market.c
+    src/ytdlp.c
     src/update.c
     src/x11.c
 )
-target_include_directories(greed PRIVATE src vendor/cui)
+target_include_directories(greed PRIVATE src vendor/cui ${CMAKE_BINARY_DIR})
 target_compile_options(greed PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 target_link_libraries(greed PRIVATE
     cui_vendor

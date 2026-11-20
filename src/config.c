@@ -21,6 +21,19 @@ const char *config_dir(void) {
     return dir_buf;
 }
 
+const char *data_dir(void) {
+    static char buf[PATH_MAX];
+    const char *xdg = getenv("XDG_DATA_HOME");
+    const char *home = getenv("HOME");
+    if (xdg && xdg[0])
+        snprintf(buf, sizeof buf, "%s/greed", xdg);
+    else if (home && home[0])
+        snprintf(buf, sizeof buf, "%s/.local/share/greed", home);
+    else
+        snprintf(buf, sizeof buf, ".local/share/greed");
+    return buf;
+}
+
 const char *config_path(void) {
     static char path[PATH_MAX];
     snprintf(path, sizeof path, "%s/config.json", config_dir());

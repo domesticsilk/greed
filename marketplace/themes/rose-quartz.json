@@ -1,0 +1,26 @@
+{
+  "name": "Rose Quartz",
+  "dark": false,
+  "bg": "#fbf4f5",
+  "surface": "#fff9fa",
+  "raised": "#f4e7ea",
+  "muted": "#f8eef0",
+  "text": "#241a1d",
+  "dim": "#6b545b",
+  "border": "#e6d3d8",
+  "accent": "#a83256",
+  "accent_strong": "#8c2747",
+  "accent_fg": "#ffffff",
+  "danger": "#b3261e",
+  "success": "#2e6b46",
+  "warning": "#8a5a00",
+  "info": "#2a5f8f",
+  "series": [
+    "#a83256",
+    "#2a5f8f",
+    "#2e6b46",
+    "#b3261e",
+    "#6d3f8f",
+    "#8a5a00"
+  ]
+}

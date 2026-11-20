@@ -1,0 +1,26 @@
+{
+  "name": "Sea Glass",
+  "dark": false,
+  "bg": "#f4f7f6",
+  "surface": "#ffffff",
+  "raised": "#eaf1ef",
+  "muted": "#e8efed",
+  "text": "#15201d",
+  "dim": "#52645f",
+  "border": "#d3e0dc",
+  "accent": "#0f766e",
+  "accent_strong": "#0b5f59",
+  "accent_fg": "#ffffff",
+  "danger": "#b91c1c",
+  "success": "#15803d",
+  "warning": "#a16207",
+  "info": "#0369a1",
+  "series": [
+    "#0f766e",
+    "#0369a1",
+    "#a16207",
+    "#b91c1c",
+    "#6d28d9",
+    "#15803d"
+  ]
+}

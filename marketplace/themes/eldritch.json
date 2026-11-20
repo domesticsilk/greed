@@ -1,0 +1,26 @@
+{
+  "name": "Eldritch",
+  "dark": true,
+  "bg": "#101418",
+  "surface": "#171d23",
+  "raised": "#1f272e",
+  "muted": "#0c1013",
+  "text": "#e6edf3",
+  "dim": "#9fb0bd",
+  "border": "#2b3540",
+  "accent": "#3fd0a8",
+  "accent_strong": "#5ee0bd",
+  "accent_fg": "#07110d",
+  "danger": "#ff7a85",
+  "success": "#6ee7a8",
+  "warning": "#e8c06a",
+  "info": "#6fc8ff",
+  "series": [
+    "#3fd0a8",
+    "#6fc8ff",
+    "#e8c06a",
+    "#ff7a85",
+    "#b39dfa",
+    "#8ad9a2"
+  ]
+}

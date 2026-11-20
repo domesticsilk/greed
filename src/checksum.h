@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* Blocking SHA-256 for installers. False when sha256sum is missing or the file cannot be read. */
+bool checksum_hash_file(const char *path, char *hex, size_t cap);
+
 /* Queue a SHA-256 job for path. False when it is already queued/running or the queue is full. */
 bool checksum_queue(const char *path);
 

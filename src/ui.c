@@ -3,11 +3,13 @@
 #include "checksum.h"
 #include "config.h"
 #include "logo.h"
+#include "market.h"
 #include "model.h"
 #include "rpc.h"
 #include "theme.h"
 #include "update.h"
 #include "version.h"
+#include "ytdlp.h"
 #include "x11.h"
 
 #include "cui.h"
@@ -108,6 +110,15 @@ typedef struct {
     cui_id menu_anchor;
     bool show_add;
     bool show_settings;
+    bool show_market;
+    char market_query[64];
+    int market_cat;
+    int market_seen_job;
+    Market market;
+    MarketView mkt;
+    YtdlpJob ytdlp;
+    bool ytdlp_active;
+    bool add_ytdlp;
     GreedUpdate upd;
     char restart[PATH_MAX];
     bool show_info;
@@ -713,6 +724,13 @@ static void open_add(App *a) {
     a->add_conn = a->cfg.max_concurrent;
 }
 
+static void open_market(App *a) {
+    a->show_market = true;
+    a->market_query[0] = 0;
+    a->market_cat = 0;
+    market_fetch(&a->market, false);
+}
+
 static void set_sched_due(App *a, time_t due) {
     struct tm t;
     localtime_r(&due, &t);
@@ -955,6 +973,9 @@ static void titlebar(App *a, cui_ctx *ui) {
         if (cui_icon_button(ui, CUI_ICON_COMMAND, .size = CUI_SIZE_SM,
                             .tooltip = "Commands (Ctrl K)"))
             a->show_palette = true;
+        if (cui_icon_button(ui, CUI_ICON_SHOPPING_CART, .size = CUI_SIZE_SM,
+                            .tooltip = "Marketplace"))
+            open_market(a);
         if (cui_icon_button(ui, CUI_ICON_SETTINGS, .size = CUI_SIZE_SM, .tooltip = "Settings"))
             open_settings(a);
         cui_box(ui, .width = CUI_PX(1), .height = CUI_PX(18), .bg = CUI_COLOR_BORDER) {}
@@ -1845,6 +1866,19 @@ static void add_dialog(App *a, cui_ctx *ui) {
         cui_textarea(ui, "links", a->add_urls, sizeof a->add_urls,
                      .placeholder = "One link per line: http, magnet, or .torrent",
                      .height = 104);
+        if (ytdlp_available()) {
+            cui_switch(ui, "Resolve video pages with yt-dlp", &a->add_ytdlp);
+            cui_muted(ui, "yt-dlp picks the best single-file stream and hands the direct link to aria2.");
+        } else {
+            cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                cui_muted(ui, "Video pages need yt-dlp.");
+                if (cui_button(ui, "Get yt-dlp", .size = CUI_SIZE_SM,
+                               .variant = CUI_BUTTON_GHOST)) {
+                    a->show_add = false;
+                    open_market(a);
+                }
+            }
+        }
         cui_label(ui, "Save to");
         cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
             cui_input(ui, "add-dir", a->add_dir, sizeof a->add_dir, .width = CUI_FILL);
@@ -1886,8 +1920,23 @@ static void add_dialog(App *a, cui_ctx *ui) {
         cui_dialog_footer(ui) {
             if (cui_button(ui, "Cancel", .variant = CUI_BUTTON_GHOST)) a->show_add = false;
             if (cui_button(ui, "Add", .variant = CUI_BUTTON_PRIMARY)) {
-                const char *name = a->add_name[0] ? a->add_name : NULL;
-                add_links(a, a->add_urls, a->add_dir, name, a->add_conn);
+                if (a->add_ytdlp && ytdlp_available()) {
+                    if (!a->add_urls[0]) {
+                        set_status(a, "Paste a link first");
+                    } else if (!ytdlp_start(&a->ytdlp, a->cfg.rpc_port, a->add_urls,
+                                            a->add_dir)) {
+                        set_status(a, "A video task is already running");
+                    } else {
+                        a->ytdlp_active = true;
+                        a->add_urls[0] = 0;
+                        a->add_name[0] = 0;
+                        a->show_add = false;
+                        set_status(a, "Resolving video links");
+                    }
+                } else {
+                    const char *name = a->add_name[0] ? a->add_name : NULL;
+                    add_links(a, a->add_urls, a->add_dir, name, a->add_conn);
+                }
             }
         }
     }
@@ -2286,8 +2335,8 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                                   .size = CUI_SIZE_SM);
                 }
                 int shown = 0;
-                for (int i = 0; i < greed_theme_count; i++)
-                    if (theme_matches(&greed_themes[i], a->theme_query, a->theme_filter))
+                for (int i = 0; i < greed_theme_total(); i++)
+                    if (theme_matches(greed_theme_at(i), a->theme_query, a->theme_filter))
                         shown++;
                 char count[48];
                 snprintf(count, sizeof count, "%d theme%s", shown, shown == 1 ? "" : "s");
@@ -2300,8 +2349,8 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                     cui_muted(ui, "No theme matches that search.");
                 } else {
                     cui_box(ui, .dir = CUI_GRID, .columns = 3, .gap = 10, .width = CUI_FILL) {
-                        for (int i = 0; i < greed_theme_count; i++) {
-                            const GreedTheme *t = &greed_themes[i];
+                        for (int i = 0; i < greed_theme_total(); i++) {
+                            const GreedTheme *t = greed_theme_at(i);
                             if (!theme_matches(t, a->theme_query, a->theme_filter)) continue;
                             if (theme_card(ui, t, !strcmp(a->edit.theme, t->name)))
                                 snprintf(a->edit.theme, sizeof a->edit.theme, "%s", t->name);
@@ -2325,6 +2374,206 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                 a->show_settings = false;
                 a->last_poll = 0;
             }
+        }
+    }
+}
+
+static const char *market_icon(const MarketItem *it) {
+    if (it->kind == MKT_THEME) return CUI_ICON_PALETTE;
+    if (it->kind == MKT_ENGINE) return CUI_ICON_ZAP;
+    return CUI_ICON_PACKAGE;
+}
+
+static bool market_matches(const MarketItem *it, const char *query, int cat) {
+    if (cat == 1 && it->kind != MKT_ENGINE) return false;
+    if (cat == 2 && it->kind != MKT_TOOL) return false;
+    if (cat == 3 && it->kind != MKT_THEME) return false;
+    if (!query[0]) return true;
+    return contains_ci(it->name, query) || contains_ci(it->summary, query) ||
+           contains_ci(it->category, query) || contains_ci(it->id, query);
+}
+
+static void market_card(App *a, cui_ctx *ui, const MarketItem *it, int index, bool featured) {
+    cui_push_id(ui, it->id);
+    char ver[64] = {0};
+    bool installed = market_installed_version(&a->mkt, it->id, ver, sizeof ver);
+    bool current = installed && !strcmp(ver, it->version);
+    bool downloading = a->mkt.job_item == index && a->mkt.job_stage == MKT_JOB_DOWNLOADING;
+    bool failed = a->mkt.job_item == index && a->mkt.job_stage == MKT_JOB_ERROR;
+    char size[32] = {0};
+    if (it->size > 0) fmt_bytes(size, sizeof size, (unsigned long long)it->size);
+
+    cui_card(ui, .width = CUI_FILL, .pad = featured ? 18 : 12, .gap = 10, .hoverable = false) {
+        cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_CENTER) {
+            cui_box(ui, .width = CUI_PX(featured ? 56 : 40), .height = CUI_PX(featured ? 56 : 40),
+                    .radius = 9,
+                    .bg = it->preview_bg ? CUI_RGB(it->preview_bg)
+                                         : cui_color_of(ui, CUI_COLOR_SURFACE_RAISED),
+                    .border = 1,
+                    .border_color = it->preview_accent ? CUI_RGB(it->preview_accent)
+                                                       : cui_color_of(ui, CUI_COLOR_BORDER)) {
+                cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_CENTER,
+                        .justify = CUI_JUSTIFY_CENTER) {
+                    cui_icon(ui, market_icon(it), featured ? 24 : 18,
+                             it->preview_accent ? CUI_RGB(it->preview_accent)
+                                                : CUI_COLOR_ACCENT_STRONG);
+                }
+            }
+            cui_column(ui, .width = CUI_FILL, .gap = 4) {
+                cui_text(ui, it->name, .font = CUI_FONT_MEDIUM, .size = featured ? 17 : 14,
+                         .nowrap = true, .width = CUI_FILL);
+                cui_row(ui, .width = CUI_FILL, .gap = 6, .align = CUI_ALIGN_CENTER) {
+                    if (it->version[0])
+                        cui_text(ui, it->version, .size = 11,
+                                 .color = CUI_COLOR_TEXT_SECONDARY);
+                    if (size[0])
+                        cui_text(ui, size, .size = 11, .color = CUI_COLOR_TEXT_MUTED);
+                    if (featured)
+                        cui_badge(ui, "Featured", .tone = CUI_TONE_ACCENT,
+                                  .size = CUI_SIZE_SM);
+                    if (current)
+                        cui_badge(ui, "Installed", .tone = CUI_TONE_SUCCESS,
+                                  .size = CUI_SIZE_SM);
+                    else if (installed)
+                        cui_badge(ui, "Update", .tone = CUI_TONE_WARNING,
+                                  .size = CUI_SIZE_SM);
+                }
+            }
+        }
+
+        if (featured)
+            cui_text(ui, it->description[0] ? it->description : it->summary, .size = 12,
+                     .color = CUI_COLOR_TEXT_SECONDARY);
+        else
+            cui_text(ui, it->summary, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
+                     .nowrap = true, .width = CUI_FILL);
+
+        if (failed)
+            cui_text(ui, a->mkt.job_error, .size = 11, .color = CUI_COLOR_DANGER,
+                     .nowrap = true, .width = CUI_FILL);
+
+        cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+            cui_text(ui, it->source[0] ? it->source : it->category, .size = 10,
+                     .color = CUI_COLOR_TEXT_MUTED, .nowrap = true, .width = CUI_FILL);
+            if (downloading) {
+                cui_text(ui, "Installing", .size = 11, .color = CUI_COLOR_TEXT_SECONDARY);
+                cui_progress(ui, a->mkt.progress, .height = 6, .width = CUI_PX(120),
+                             .show_value = true);
+            } else if (failed) {
+                if (cui_button(ui, "Retry", .size = CUI_SIZE_SM, .variant = CUI_BUTTON_PRIMARY))
+                    market_install(&a->market, index);
+            } else if (!installed) {
+                if (cui_button(ui, "Install", .size = CUI_SIZE_SM,
+                               .variant = CUI_BUTTON_PRIMARY))
+                    market_install(&a->market, index);
+            } else {
+                if (!current && cui_button(ui, "Update", .size = CUI_SIZE_SM,
+                                           .variant = CUI_BUTTON_PRIMARY))
+                    market_install(&a->market, index);
+                if (cui_button(ui, "Remove", .size = CUI_SIZE_SM, .variant = CUI_BUTTON_GHOST) &&
+                    market_remove(&a->market, index))
+                    set_status(a, "Removed %s", it->name);
+            }
+        }
+    }
+    cui_pop_id(ui);
+}
+
+static void market_dialog(App *a, cui_ctx *ui) {
+    if (!a->show_market) return;
+    MarketView *v = &a->mkt;
+    if (v->stage == MKT_LOADING || v->job_stage == MKT_JOB_DOWNLOADING)
+        cui_request_wakeup(ui, 1.0f / 30.0f);
+
+    float body_h = cui_viewport_size(ui).y > 760 ? 330 : 240;
+    cui_dialog(ui, "Marketplace", &a->show_market, .width = 860,
+               .description = "Optional engines, tools and themes. Every download is "
+                              "checksum verified and installed into your Greed folder.") {
+        cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+            cui_search(ui, "market-search", a->market_query, sizeof a->market_query,
+                       .placeholder = "Search the marketplace", .icon = CUI_ICON_SEARCH,
+                       .autofocus = true, .width = CUI_FILL);
+            if (cui_icon_button(ui, CUI_ICON_REFRESH_CW, .size = CUI_SIZE_SM,
+                                .tooltip = "Refresh catalog",
+                                .disabled = v->job_stage == MKT_JOB_DOWNLOADING))
+                market_fetch(&a->market, true);
+        }
+
+        bool tools_present = false;
+        for (int i = 0; i < v->count; i++)
+            if (v->items[i].kind == MKT_TOOL) tools_present = true;
+        if (a->market_cat == 2 && !tools_present) a->market_cat = 0;
+
+        static const char *cats[] = {"All", "Engines", "Tools", "Themes"};
+        cui_row(ui, .width = CUI_FILL, .gap = 6, .wrap = true, .align = CUI_ALIGN_CENTER) {
+            for (int i = 0; i < 4; i++) {
+                if (i == 2 && !tools_present) continue;
+                bool on = a->market_cat == i;
+                if (cui_chip(ui, cats[i], &on)) a->market_cat = i;
+            }
+            cui_spacer(ui);
+            char installed[32];
+            snprintf(installed, sizeof installed, "%d installed", v->installed_count);
+            cui_text(ui, installed, .size = 11, .color = CUI_COLOR_TEXT_MUTED);
+        }
+
+        if (v->note[0]) cui_muted(ui, v->note);
+
+        if (v->stage == MKT_LOADING) {
+            cui_row(ui, .width = CUI_FILL, .gap = 10, .align = CUI_ALIGN_CENTER) {
+                cui_spinner(ui, 16);
+                cui_text(ui, "Loading the marketplace", .size = 13,
+                         .color = CUI_COLOR_TEXT_SECONDARY);
+            }
+        } else if (v->stage == MKT_ERROR) {
+            if (cui_empty_state(ui, "Marketplace is offline", .icon = CUI_ICON_GLOBE,
+                                .description = v->error, .action = "Try again"))
+                market_fetch(&a->market, true);
+        } else {
+            int total = 0;
+            for (int i = 0; i < v->count; i++)
+                if (market_matches(&v->items[i], a->market_query, a->market_cat)) total++;
+
+            int featured = -1;
+            if (!a->market_query[0])
+                for (int i = 0; i < v->count; i++)
+                    if (market_matches(&v->items[i], a->market_query, a->market_cat)) {
+                        featured = i;
+                        break;
+                    }
+
+            char count[64];
+            snprintf(count, sizeof count, "%d result%s", total, total == 1 ? "" : "s");
+            cui_text(ui, count, .size = 11, .color = CUI_COLOR_TEXT_MUTED);
+
+            cui_scroll(ui, .id = "market-body", .width = CUI_FILL, .height = CUI_PX(body_h),
+                       .gap = 10, .fade_edges = true,
+                       .fade_color = CUI_COLOR_SURFACE_RAISED) {
+                if (!total) {
+                    if (cui_empty_state(ui, "No matches", .icon = CUI_ICON_SEARCH,
+                                        .description = "Try another word or category.",
+                                        .action = "Clear filters")) {
+                        a->market_query[0] = 0;
+                        a->market_cat = 0;
+                    }
+                } else {
+                    if (featured >= 0)
+                        market_card(a, ui, &v->items[featured], featured, true);
+                    cui_box(ui, .dir = CUI_GRID, .min_column_width = 300, .gap = 10,
+                            .width = CUI_FILL) {
+                        for (int i = 0; i < v->count; i++) {
+                            if (i == featured) continue;
+                            if (!market_matches(&v->items[i], a->market_query, a->market_cat))
+                                continue;
+                            market_card(a, ui, &v->items[i], i, false);
+                        }
+                    }
+                }
+            }
+        }
+
+        cui_dialog_footer(ui) {
+            if (cui_button(ui, "Close", .variant = CUI_BUTTON_GHOST)) a->show_market = false;
         }
     }
 }
@@ -2715,8 +2964,8 @@ static void remove_dialog(App *a, cui_ctx *ui) {
 
 enum {
     CMD_ADD, CMD_SEARCH, CMD_PAUSE, CMD_RESUME, CMD_REMOVE, CMD_INFO, CMD_SELECT_ALL,
-    CMD_CLEAR, CMD_DOWNLOADS, CMD_STATS, CMD_SCHEDULED, CMD_SIDEBAR, CMD_SETTINGS, CMD_KEYS,
-    CMD_VIM, CMD_ENGINE, CMD_QUIT,
+    CMD_CLEAR, CMD_DOWNLOADS, CMD_STATS, CMD_SCHEDULED, CMD_SIDEBAR, CMD_SETTINGS,
+    CMD_MARKET, CMD_KEYS, CMD_VIM, CMD_ENGINE, CMD_QUIT,
 };
 
 static int palette_commands(const App *a, cui_command *out, int *ids) {
@@ -2739,6 +2988,7 @@ static int palette_commands(const App *a, cui_command *out, int *ids) {
     CMD(CMD_SIDEBAR, a->sidebar_open ? "Hide sidebar" : "Show sidebar", CUI_ICON_PANEL_LEFT,
         "View", "Ctrl B");
     CMD(CMD_SETTINGS, "Settings", CUI_ICON_SETTINGS, "Settings", "Ctrl ,");
+    CMD(CMD_MARKET, "Marketplace", CUI_ICON_SHOPPING_CART, "Settings", "");
     CMD(CMD_KEYS, "Keyboard shortcuts", CUI_ICON_KEYBOARD, "Settings", "?");
     CMD(CMD_VIM, vim, CUI_ICON_KEYBOARD, "Settings", "");
     CMD(CMD_ENGINE, engine, CUI_ICON_PLAY, "Settings", "");
@@ -2771,6 +3021,7 @@ static void run_command(App *a, int cmd) {
     case CMD_SCHEDULED: a->view = VIEW_SCHEDULED; break;
     case CMD_SIDEBAR: a->sidebar_open = !a->sidebar_open; break;
     case CMD_SETTINGS: open_settings(a); break;
+    case CMD_MARKET: open_market(a); break;
     case CMD_KEYS:
         open_settings(a);
         a->settings_tab = 4;
@@ -2894,7 +3145,7 @@ static void list_keys(App *a, cui_ctx *ui, bool vim) {
 }
 
 static void handle_keys(App *a, cui_ctx *ui) {
-    if (a->show_settings) return;
+    if (a->show_settings || a->show_market) return;
     if (a->show_add || a->show_schedule || a->show_info || a->show_remove)
         return;
     if (a->show_palette) return;
@@ -2988,6 +3239,32 @@ static void frame(cui_ctx *ui, void *user) {
     }
     checksum_tick(a);
     schedule_tick(a);
+    if (a->ytdlp_active) {
+        bool running = false;
+        int done = 0, total = 0;
+        char err[512] = {0};
+        ytdlp_snapshot(&a->ytdlp, &running, &done, &total, err, sizeof err);
+        if (!running) {
+            a->ytdlp_active = false;
+            if (err[0]) set_status(a, "Video links: %s", err);
+            else if (done < total)
+                set_status(a, "Added %d of %d video links", done, total);
+            else set_status(a, "Added %d video link%s", done, done == 1 ? "" : "s");
+            a->last_poll = 0;
+        } else {
+            cui_request_wakeup(ui, 0.5f);
+        }
+    }
+    if (a->show_market) {
+        market_snapshot(&a->market, &a->mkt);
+        if (a->mkt.job_stage != a->market_seen_job) {
+            a->market_seen_job = a->mkt.job_stage;
+            if (a->mkt.job_stage == MKT_JOB_INSTALLED)
+                set_status(a, "%s", a->mkt.status);
+            else if (a->mkt.job_stage == MKT_JOB_ERROR)
+                set_status(a, "Marketplace: %s", a->mkt.job_error);
+        }
+    }
     /* Screenshot/test hook: GREED_DEMO=details selects the first download. */
     if (a->demo_details && !a->selected[0] && a->count)
         snprintf(a->selected, sizeof a->selected, "%s", a->items[0].gid);
@@ -3025,6 +3302,7 @@ static void frame(cui_ctx *ui, void *user) {
     add_dialog(a, ui);
     schedule_dialog(a, ui);
     settings_dialog(a, ui);
+    market_dialog(a, ui);
     info_tick(a, ui);
     info_dialog(a, ui);
     remove_dialog(a, ui);
@@ -3047,6 +3325,8 @@ int ui_run(void) {
     snprintf(a->status, sizeof a->status, "Ready");
     rpc_init(&a->rpc, cfg.rpc_port);
     update_init(&a->upd);
+    market_init(&a->market);
+    ytdlp_init(&a->ytdlp);
     a->sched_count = config_schedules_load(a->sched, GREED_MAX_SCHEDULED);
 
     /* Test hook for screenshots: GREED_DEMO=add|settings|settings-bandwidth|settings-torrents|details|stats|empty */
@@ -3069,6 +3349,7 @@ int ui_run(void) {
         open_settings(a);
         a->settings_tab = 5;
     } else if (demo && !strcmp(demo, "palette")) a->show_palette = true;
+    else if (demo && !strcmp(demo, "market")) open_market(a);
     else if (demo && !strcmp(demo, "details")) a->demo_details = true;
     else if (demo && !strcmp(demo, "stats")) a->view = VIEW_STATS;
     else if (demo && !strcmp(demo, "scheduled")) a->view = VIEW_SCHEDULED;

@@ -1,0 +1,26 @@
+{
+  "name": "Paper & Ink",
+  "dark": false,
+  "bg": "#faf8f2",
+  "surface": "#fffdf8",
+  "raised": "#f1ece0",
+  "muted": "#f5f0e6",
+  "text": "#1c1a16",
+  "dim": "#5c574c",
+  "border": "#ddd5c4",
+  "accent": "#8a4b1f",
+  "accent_strong": "#713c17",
+  "accent_fg": "#fffaf2",
+  "danger": "#a12a2a",
+  "success": "#2f6b3a",
+  "warning": "#8a5a00",
+  "info": "#225f8a",
+  "series": [
+    "#8a4b1f",
+    "#225f8a",
+    "#2f6b3a",
+    "#a12a2a",
+    "#6b4c8a",
+    "#8a5a00"
+  ]
+}

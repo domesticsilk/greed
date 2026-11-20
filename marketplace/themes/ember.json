@@ -1,0 +1,26 @@
+{
+  "name": "Ember",
+  "dark": true,
+  "bg": "#141010",
+  "surface": "#1b1515",
+  "raised": "#241c1c",
+  "muted": "#0f0c0c",
+  "text": "#f2e9e4",
+  "dim": "#b8a49c",
+  "border": "#332828",
+  "accent": "#ff8a5c",
+  "accent_strong": "#ffa477",
+  "accent_fg": "#1a0d07",
+  "danger": "#ff6b6b",
+  "success": "#9ad17a",
+  "warning": "#e8c06a",
+  "info": "#7fc8e8",
+  "series": [
+    "#ff8a5c",
+    "#e8c06a",
+    "#9ad17a",
+    "#7fc8e8",
+    "#ff6b6b",
+    "#d8b4a0"
+  ]
+}

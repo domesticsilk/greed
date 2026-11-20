@@ -73,6 +73,44 @@ static bool store_save(struct json_object *v) {
     return ok;
 }
 
+bool checksum_hash_file(const char *path, char *hex, size_t cap) {
+    if (!path || !path[0] || cap < 65) return false;
+    int fds[2];
+    if (pipe(fds) != 0) return false;
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return false;
+    }
+    if (pid == 0) {
+        close(fds[0]);
+        dup2(fds[1], STDOUT_FILENO);
+        close(fds[1]);
+        execlp("sha256sum", "sha256sum", "--", path, (char *)NULL);
+        _exit(127);
+    }
+    close(fds[1]);
+    char buf[256];
+    size_t len = 0;
+    ssize_t got;
+    while (len < sizeof buf - 1 && (got = read(fds[0], buf + len, sizeof buf - 1 - len)) > 0)
+        len += (size_t)got;
+    close(fds[0]);
+    int st = 0;
+    waitpid(pid, &st, 0);
+    if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) return false;
+
+    int k = 0;
+    for (size_t i = 0; i < len && k < 64; i++) {
+        char ch = buf[i];
+        if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) hex[k++] = ch;
+        else break;
+    }
+    hex[k] = 0;
+    return k == 64;
+}
+
 static void start_next(void) {
     if (job_pid > 0 || queue_count == 0) return;
     snprintf(job_path, sizeof job_path, "%s", queue[0]);
