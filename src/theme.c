@@ -218,6 +218,16 @@ static cui_color readable_on(cui_color fg, const cui_color *bg, int n, cui_color
     return toward;
 }
 
+/* Focus rings are non-text: WCAG 1.4.11 asks for 3:1 against what is behind them. */
+static cui_color ring_on(cui_color fg, const cui_color *bg, int n, cui_color toward) {
+    if (min_on(fg, bg, n) >= 3.0f) return fg;
+    for (int i = 1; i <= 32; i++) {
+        cui_color c = mix_srgb(fg, toward, i / 32.0f);
+        if (min_on(c, bg, n) >= 3.0f) return c;
+    }
+    return toward;
+}
+
 void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, float text_scale,
                        float spacing) {
     static const GreedTheme *last;
@@ -289,7 +299,7 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
         readable_on(mix_srgb(CUI_RGB(t->info), text, 0.08f), surfaces, 12, text_toward);
     c[CUI_TOKEN_HOVER] = hover;
     c[CUI_TOKEN_ACTIVE] = active;
-    c[CUI_TOKEN_FOCUS_RING] = CUI_RGB(t->accent_strong);
+    c[CUI_TOKEN_FOCUS_RING] = ring_on(CUI_RGB(t->accent_strong), surfaces, 12, text_toward);
     c[CUI_TOKEN_CONTROL_ON] = accent;
     c[CUI_TOKEN_CONTROL_GLYPH] = accent_fg;
     c[CUI_TOKEN_CONTROL_TRACK] = cui_mix(CUI_RGB(t->bg), CUI_RGB(t->border), 0.6f);

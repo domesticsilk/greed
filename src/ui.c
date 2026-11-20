@@ -32,6 +32,20 @@ typedef struct {
     char status[24];
 } Known;
 
+enum { INFO_FILES_MAX = 512, INFO_PEERS_MAX = 256 };
+
+typedef struct {
+    char path[512];
+    unsigned long long length, completed;
+    bool selected;
+} InfoFile;
+
+typedef struct {
+    char addr[64];
+    unsigned long long down, up;
+    bool seeder, peer_choking;
+} InfoPeer;
+
 typedef struct {
     Config cfg;
     Config edit;
@@ -95,6 +109,13 @@ typedef struct {
     bool show_info;
     bool details_open;
     char info_gid[32];
+    int info_tab;
+    double info_refresh;
+    InfoFile *info_files;
+    int info_file_count, info_file_total;
+    InfoPeer *info_peers;
+    int info_peer_count, info_peer_total;
+    char info_error[512];
     bool sidebar_open;
     int settings_tab;
     int settings_seen_tab;
@@ -242,6 +263,25 @@ static Download *find_item(App *a, const char *gid) {
     for (int i = 0; i < a->count; i++)
         if (!strcmp(a->items[i].gid, gid)) return &a->items[i];
     return NULL;
+}
+
+static void info_clear(App *a) {
+    free(a->info_files);
+    a->info_files = NULL;
+    a->info_file_count = a->info_file_total = 0;
+    free(a->info_peers);
+    a->info_peers = NULL;
+    a->info_peer_count = a->info_peer_total = 0;
+    a->info_error[0] = 0;
+    a->info_refresh = 0;
+}
+
+static void open_info(App *a, const char *gid) {
+    if (!gid || !gid[0]) return;
+    snprintf(a->info_gid, sizeof a->info_gid, "%s", gid);
+    a->info_tab = 0;
+    info_clear(a);
+    a->show_info = true;
 }
 
 static bool selection_has(const App *a, const char *gid) {
@@ -1294,10 +1334,8 @@ static void download_table(App *a, cui_ctx *ui) {
                         selection_toggle(a, d->gid);
                         a->details_open = true;
                     }
-                    if (cui_menu_item(ui, "Info", .icon = CUI_ICON_INFO)) {
-                        snprintf(a->info_gid, sizeof a->info_gid, "%s", d->gid);
-                        a->show_info = true;
-                    }
+                    if (cui_menu_item(ui, "Info", .icon = CUI_ICON_INFO))
+                        open_info(a, d->gid);
                     bool can_verify = download_is_finished(d) && d->file_count <= 1;
                     if (cui_menu_item(ui, "Verify checksum", .icon = CUI_ICON_CHECK_CHECK,
                                       .disabled = !can_verify))
@@ -2196,6 +2234,309 @@ static void settings_dialog(App *a, cui_ctx *ui) {
     }
 }
 
+static const char *info_str(struct json_object *o, const char *key) {
+    struct json_object *v = NULL;
+    if (json_object_object_get_ex(o, key, &v)) return json_object_get_string(v);
+    return NULL;
+}
+
+static unsigned long long info_u64(struct json_object *o, const char *key) {
+    const char *s = info_str(o, key);
+    return s ? strtoull(s, NULL, 10) : 0;
+}
+
+static bool info_bool(struct json_object *o, const char *key) {
+    const char *s = info_str(o, key);
+    return s && !strcmp(s, "true");
+}
+
+static void info_rel_path(const Download *d, const char *path, char *out, size_t cap) {
+    const char *p = path ? path : "";
+    size_t dl = strlen(d->dir);
+    if (dl && !strncmp(p, d->dir, dl)) {
+        p += dl;
+        while (*p == '/') p++;
+    }
+    size_t nl = strlen(d->name);
+    if (nl && !strncmp(p, d->name, nl) && p[nl] == '/') p += nl + 1;
+    if (!*p) p = d->name;
+    snprintf(out, cap, "%s", p);
+}
+
+static void info_fetch_files(App *a) {
+    struct json_object *params = json_object_new_array();
+    json_object_array_add(params, json_object_new_string(a->info_gid));
+    struct json_object *res = rpc_call(&a->rpc, "aria2.getFiles", params);
+    if (!res) {
+        snprintf(a->info_error, sizeof a->info_error, "%s", a->rpc.error);
+        return;
+    }
+    int total = (int)json_object_array_length(res);
+    int n = total > INFO_FILES_MAX ? INFO_FILES_MAX : total;
+    InfoFile *files = n ? realloc(a->info_files, (size_t)n * sizeof *files) : NULL;
+    if (n && !files) {
+        json_object_put(res);
+        snprintf(a->info_error, sizeof a->info_error, "Not enough memory for the file list");
+        return;
+    }
+    if (!n) {
+        free(a->info_files);
+        files = NULL;
+    }
+    a->info_files = files;
+    a->info_file_count = 0;
+    a->info_file_total = total;
+    for (int i = 0; i < n; i++) {
+        struct json_object *o = json_object_array_get_idx(res, i);
+        InfoFile *f = &a->info_files[a->info_file_count++];
+        const char *path = info_str(o, "path");
+        snprintf(f->path, sizeof f->path, "%s", path ? path : "");
+        f->length = info_u64(o, "length");
+        f->completed = info_u64(o, "completedLength");
+        f->selected = info_bool(o, "selected");
+    }
+    json_object_put(res);
+    a->info_error[0] = 0;
+}
+
+static void info_fetch_peers(App *a) {
+    struct json_object *params = json_object_new_array();
+    json_object_array_add(params, json_object_new_string(a->info_gid));
+    struct json_object *res = rpc_call(&a->rpc, "aria2.getPeers", params);
+    if (!res) {
+        /* aria2 reports this for a stopped torrent: an empty list, not a failure. */
+        if (strstr(a->rpc.error, "No peer data")) {
+            free(a->info_peers);
+            a->info_peers = NULL;
+            a->info_peer_count = a->info_peer_total = 0;
+            a->info_error[0] = 0;
+            return;
+        }
+        snprintf(a->info_error, sizeof a->info_error, "%s", a->rpc.error);
+        return;
+    }
+    int total = (int)json_object_array_length(res);
+    int n = total > INFO_PEERS_MAX ? INFO_PEERS_MAX : total;
+    InfoPeer *peers = n ? realloc(a->info_peers, (size_t)n * sizeof *peers) : NULL;
+    if (n && !peers) {
+        json_object_put(res);
+        snprintf(a->info_error, sizeof a->info_error, "Not enough memory for the peer list");
+        return;
+    }
+    if (!n) {
+        free(a->info_peers);
+        peers = NULL;
+    }
+    a->info_peers = peers;
+    a->info_peer_count = 0;
+    a->info_peer_total = total;
+    for (int i = 0; i < n; i++) {
+        struct json_object *o = json_object_array_get_idx(res, i);
+        const char *ip = info_str(o, "ip");
+        if (!ip || !*ip) continue;
+        const char *port = info_str(o, "port");
+        InfoPeer *p = &a->info_peers[a->info_peer_count++];
+        if (strchr(ip, ':'))
+            snprintf(p->addr, sizeof p->addr, "[%s]:%s", ip, port ? port : "?");
+        else
+            snprintf(p->addr, sizeof p->addr, "%s:%s", ip, port ? port : "?");
+        p->down = info_u64(o, "downloadSpeed");
+        p->up = info_u64(o, "uploadSpeed");
+        p->seeder = info_bool(o, "seeder");
+        p->peer_choking = info_bool(o, "peerChoking");
+    }
+    json_object_put(res);
+    a->info_error[0] = 0;
+}
+
+static void info_tick(App *a, cui_ctx *ui) {
+    if (!a->show_info || a->info_tab == 0) return;
+    double now = cui_time(ui);
+    if (now < a->info_refresh) return;
+    a->info_refresh = now + 1.0;
+    Download *d = find_item(a, a->info_gid);
+    if (!d) return;
+    if (!a->connected) {
+        snprintf(a->info_error, sizeof a->info_error, "aria2 is offline");
+        return;
+    }
+    if (a->info_tab == 1) info_fetch_files(a);
+    else if (a->info_tab == 2 && d->is_torrent) info_fetch_peers(a);
+}
+
+static void info_files_tab(App *a, Download *d, cui_ctx *ui) {
+    char count[64];
+    if (a->info_file_total > a->info_file_count)
+        snprintf(count, sizeof count, "Showing %d of %d files", a->info_file_count,
+                 a->info_file_total);
+    else
+        snprintf(count, sizeof count, "%d file%s", a->info_file_total,
+                 a->info_file_total == 1 ? "" : "s");
+    cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
+        cui_text(ui, count, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
+        cui_spacer(ui);
+        if (cui_icon_button(ui, CUI_ICON_REFRESH_CW, .size = CUI_SIZE_SM, .tooltip = "Refresh"))
+            a->info_refresh = 0;
+    }
+    if (a->info_error[0]) {
+        cui_text(ui, a->info_error, .size = 12, .color = CUI_COLOR_DANGER);
+        return;
+    }
+    if (!a->info_file_count) {
+        if (a->info_refresh == 0)
+            cui_muted(ui, "Loading files...");
+        else if (d->is_torrent)
+            cui_muted(ui, "No file list yet. Metadata may still be arriving.");
+        else
+            cui_muted(ui, "File details are available for torrents.");
+        return;
+    }
+    cui_scroll(ui, .id = "info-files", .width = CUI_FILL, .height = CUI_PX(300), .gap = 2) {
+        for (int i = 0; i < a->info_file_count; i++) {
+            InfoFile *f = &a->info_files[i];
+            char rel[512], size[32], done[32], meta[80], pct[16];
+            info_rel_path(d, f->path, rel, sizeof rel);
+            fmt_bytes(size, sizeof size, f->length);
+            fmt_bytes(done, sizeof done, f->completed);
+            double p = f->length ? (double)f->completed / (double)f->length : 0;
+            snprintf(pct, sizeof pct, "%.0f%%", p * 100.0);
+            if (f->completed && f->completed < f->length)
+                snprintf(meta, sizeof meta, "%s of %s", done, size);
+            else
+                snprintf(meta, sizeof meta, "%s", size);
+            cui_column(ui, .width = CUI_FILL, .gap = 4) {
+                cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                    cui_text(ui, rel, .size = 12, .nowrap = true, .width = CUI_FILL);
+                    if (!f->selected)
+                        cui_badge(ui, "Skipped", .tone = CUI_TONE_NEUTRAL, .size = CUI_SIZE_SM);
+                    cui_text(ui, meta, .size = 11, .color = CUI_COLOR_TEXT_MUTED, .tabular = true);
+                }
+                if (f->length && f->completed < f->length) {
+                    cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                        cui_progress(ui, (float)p, .height = 3, .width = CUI_FILL);
+                        cui_text(ui, pct, .size = 10, .color = CUI_COLOR_TEXT_MUTED,
+                                 .tabular = true);
+                    }
+                }
+            }
+            if (i + 1 < a->info_file_count) cui_separator(ui);
+        }
+    }
+}
+
+static void info_peers_tab(App *a, Download *d, cui_ctx *ui) {
+    char count[64];
+    if (a->info_peer_total > a->info_peer_count)
+        snprintf(count, sizeof count, "Showing %d of %d peers", a->info_peer_count,
+                 a->info_peer_total);
+    else
+        snprintf(count, sizeof count, "%d peer%s", a->info_peer_total,
+                 a->info_peer_total == 1 ? "" : "s");
+    cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
+        cui_text(ui, count, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY);
+        cui_spacer(ui);
+        if (cui_icon_button(ui, CUI_ICON_REFRESH_CW, .size = CUI_SIZE_SM, .tooltip = "Refresh"))
+            a->info_refresh = 0;
+    }
+    if (!d->is_torrent) {
+        cui_muted(ui, "Peers are only available for torrents.");
+        return;
+    }
+    if (a->info_error[0]) {
+        cui_text(ui, a->info_error, .size = 12, .color = CUI_COLOR_DANGER);
+        return;
+    }
+    if (!a->info_peer_count) {
+        if (a->info_refresh == 0)
+            cui_muted(ui, "Loading peers...");
+        else
+            cui_muted(ui, "No peers connected yet.");
+        return;
+    }
+    cui_scroll(ui, .id = "info-peers", .width = CUI_FILL, .height = CUI_PX(300), .gap = 2) {
+        for (int i = 0; i < a->info_peer_count; i++) {
+            InfoPeer *p = &a->info_peers[i];
+            char down[32], up[32];
+            fmt_speed(down, sizeof down, p->down);
+            fmt_speed(up, sizeof up, p->up);
+            cui_row(ui, .width = CUI_FILL, .gap = 10, .align = CUI_ALIGN_CENTER) {
+                cui_badge(ui, p->seeder ? "Seed" : "Peer",
+                          .tone = p->seeder ? CUI_TONE_SUCCESS : CUI_TONE_NEUTRAL, .dot = true,
+                          .size = CUI_SIZE_SM);
+                cui_column(ui, .width = CUI_FILL, .gap = 2) {
+                    cui_text(ui, p->addr, .size = 12, .font = CUI_FONT_MONO, .nowrap = true);
+                    cui_row(ui, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                        cui_icon(ui, CUI_ICON_ARROW_DOWN, 11, CUI_COLOR_TEXT_MUTED);
+                        cui_text(ui, down, .size = 10, .color = CUI_COLOR_TEXT_MUTED,
+                                 .tabular = true);
+                        cui_icon(ui, CUI_ICON_ARROW_UP, 11, CUI_COLOR_TEXT_MUTED);
+                        cui_text(ui, up, .size = 10, .color = CUI_COLOR_TEXT_MUTED,
+                                 .tabular = true);
+                        if (p->peer_choking)
+                            cui_badge(ui, "Choked", .tone = CUI_TONE_WARNING,
+                                      .size = CUI_SIZE_SM);
+                    }
+                }
+            }
+            if (i + 1 < a->info_peer_count) cui_separator(ui);
+        }
+    }
+}
+
+static void info_overview(App *a, Download *d, cui_ctx *ui) {
+    double p = download_progress(d);
+    char pct[32];
+    snprintf(pct, sizeof pct, "%.1f%%", p * 100.0);
+    cui_progress(ui, (float)p, .height = 6, .tone = status_tone(d));
+    kv(ui, "Progress", pct);
+    char size[32], done[32], speed[32], up[32], eta[32], num[32];
+    if (d->total) fmt_bytes(size, sizeof size, d->total);
+    else snprintf(size, sizeof size, "n/a");
+    fmt_bytes(done, sizeof done, d->completed);
+    fmt_speed(speed, sizeof speed, d->down_speed);
+    fmt_speed(up, sizeof up, d->up_speed);
+    unsigned long long secs;
+    if (download_eta(d, &secs)) fmt_eta(eta, sizeof eta, secs);
+    else snprintf(eta, sizeof eta, "n/a");
+    kv(ui, "Size", size);
+    kv(ui, "Downloaded", done);
+    kv(ui, "Speed", speed);
+    kv(ui, "Upload", up);
+    kv(ui, "ETA", eta);
+    snprintf(num, sizeof num, "%u", d->connections);
+    kv(ui, "Connections", num);
+    if (d->is_torrent) {
+        snprintf(num, sizeof num, "%u", d->seeders);
+        kv(ui, "Seeders", num);
+    }
+    if (d->file_count > 1) {
+        snprintf(num, sizeof num, "%d", d->file_count);
+        kv(ui, "Files", num);
+    }
+    kv(ui, "GID", d->gid);
+    cui_text(ui, "Directory", .size = 12, .color = CUI_COLOR_TEXT_MUTED);
+    cui_text(ui, d->dir, .size = 12, .font = CUI_FONT_MONO, .color = CUI_COLOR_TEXT_SECONDARY);
+    cui_text(ui, "URL", .size = 12, .color = CUI_COLOR_TEXT_MUTED);
+    cui_text(ui, d->url, .size = 10, .font = CUI_FONT_MONO, .color = CUI_COLOR_TEXT_SECONDARY);
+
+    char file[PATH_MAX];
+    if (download_path(d, file, sizeof file)) {
+        char hex[65];
+        int state = checksum_stored(file, hex, sizeof hex);
+        cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
+            cui_text(ui, "SHA-256", .size = 12, .color = CUI_COLOR_TEXT_MUTED);
+            cui_spacer(ui);
+            if (state)
+                cui_badge(ui, state == 1 ? "Verified" : "Mismatch",
+                          .tone = state == 1 ? CUI_TONE_SUCCESS : CUI_TONE_DANGER, .dot = true);
+        }
+        cui_text(ui, state ? hex : "No baseline recorded yet", .size = 10, .font = CUI_FONT_MONO,
+                 .color = CUI_COLOR_TEXT_SECONDARY);
+    } else {
+        cui_muted(ui, "Checksum verification is not available for multi-file torrents.");
+    }
+}
+
 static void info_dialog(App *a, cui_ctx *ui) {
     if (!a->show_info) return;
     Download *d = find_item(a, a->info_gid);
@@ -2209,59 +2550,17 @@ static void info_dialog(App *a, cui_ctx *ui) {
             if (!strcmp(download_status_label(d), "Metadata")) cui_spinner(ui, 14);
             cui_badge(ui, download_status_label(d), .tone = status_tone(d), .dot = true);
         }
-        double p = download_progress(d);
-        char pct[32];
-        snprintf(pct, sizeof pct, "%.1f%%", p * 100.0);
-        cui_progress(ui, (float)p, .height = 6, .tone = status_tone(d));
-        kv(ui, "Progress", pct);
-        char size[32], done[32], speed[32], up[32], eta[32], num[32];
-        if (d->total) fmt_bytes(size, sizeof size, d->total);
-        else snprintf(size, sizeof size, "n/a");
-        fmt_bytes(done, sizeof done, d->completed);
-        fmt_speed(speed, sizeof speed, d->down_speed);
-        fmt_speed(up, sizeof up, d->up_speed);
-        unsigned long long secs;
-        if (download_eta(d, &secs)) fmt_eta(eta, sizeof eta, secs);
-        else snprintf(eta, sizeof eta, "n/a");
-        kv(ui, "Size", size);
-        kv(ui, "Downloaded", done);
-        kv(ui, "Speed", speed);
-        kv(ui, "Upload", up);
-        kv(ui, "ETA", eta);
-        snprintf(num, sizeof num, "%u", d->connections);
-        kv(ui, "Connections", num);
-        if (d->is_torrent) {
-            snprintf(num, sizeof num, "%u", d->seeders);
-            kv(ui, "Seeders", num);
-        }
-        if (d->file_count > 1) {
-            snprintf(num, sizeof num, "%d", d->file_count);
-            kv(ui, "Files", num);
-        }
-        kv(ui, "GID", d->gid);
-        cui_text(ui, "Directory", .size = 12, .color = CUI_COLOR_TEXT_MUTED);
-        cui_text(ui, d->dir, .size = 12, .font = CUI_FONT_MONO,
-                 .color = CUI_COLOR_TEXT_SECONDARY);
-        cui_text(ui, "URL", .size = 12, .color = CUI_COLOR_TEXT_MUTED);
-        cui_text(ui, d->url, .size = 10, .font = CUI_FONT_MONO,
-                 .color = CUI_COLOR_TEXT_SECONDARY);
-
-        char file[PATH_MAX];
-        if (download_path(d, file, sizeof file)) {
-            char hex[65];
-            int state = checksum_stored(file, hex, sizeof hex);
-            cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
-                cui_text(ui, "SHA-256", .size = 12, .color = CUI_COLOR_TEXT_MUTED);
-                cui_spacer(ui);
-                if (state)
-                    cui_badge(ui, state == 1 ? "Verified" : "Mismatch",
-                              .tone = state == 1 ? CUI_TONE_SUCCESS : CUI_TONE_DANGER, .dot = true);
-            }
-            cui_text(ui, state ? hex : "No baseline recorded yet", .size = 10,
-                     .font = CUI_FONT_MONO, .color = CUI_COLOR_TEXT_SECONDARY);
-        } else {
-            cui_muted(ui, "Checksum verification is not available for multi-file torrents.");
-        }
+        static const char *tabs[] = {"Overview", "Files", "Peers"};
+        static const char *icons[] = {CUI_ICON_INFO, CUI_ICON_FILE, CUI_ICON_USERS};
+        int tab = a->info_tab;
+        cui_tabs(ui, "info-tabs", tabs, 3, &a->info_tab, .icons = icons);
+        if (a->info_tab != tab) a->info_refresh = 0;
+        if (a->info_tab == 1)
+            info_files_tab(a, d, ui);
+        else if (a->info_tab == 2)
+            info_peers_tab(a, d, ui);
+        else
+            info_overview(a, d, ui);
 
         cui_dialog_footer(ui) {
             if (download_is_finished(d) && d->file_count <= 1 &&
@@ -2316,8 +2615,8 @@ static void remove_dialog(App *a, cui_ctx *ui) {
 }
 
 enum {
-    CMD_ADD, CMD_SEARCH, CMD_PAUSE, CMD_RESUME, CMD_REMOVE, CMD_SELECT_ALL, CMD_CLEAR,
-    CMD_DOWNLOADS, CMD_STATS, CMD_SCHEDULED, CMD_SIDEBAR, CMD_SETTINGS, CMD_KEYS,
+    CMD_ADD, CMD_SEARCH, CMD_PAUSE, CMD_RESUME, CMD_REMOVE, CMD_INFO, CMD_SELECT_ALL,
+    CMD_CLEAR, CMD_DOWNLOADS, CMD_STATS, CMD_SCHEDULED, CMD_SIDEBAR, CMD_SETTINGS, CMD_KEYS,
     CMD_VIM, CMD_ENGINE, CMD_QUIT,
 };
 
@@ -2332,6 +2631,7 @@ static int palette_commands(const App *a, cui_command *out, int *ids) {
     CMD(CMD_PAUSE, "Pause selected", CUI_ICON_PAUSE, "Downloads", "Space");
     CMD(CMD_RESUME, "Resume selected", CUI_ICON_PLAY, "Downloads", "");
     CMD(CMD_REMOVE, "Remove selected", CUI_ICON_TRASH_2, "Downloads", "Delete");
+    CMD(CMD_INFO, "Download info", CUI_ICON_INFO, "Downloads", "Ctrl I");
     CMD(CMD_SELECT_ALL, "Select all", CUI_ICON_SQUARE_CHECK, "Selection", "Ctrl A");
     CMD(CMD_CLEAR, "Clear selection", CUI_ICON_X, "Selection", "Esc");
     CMD(CMD_DOWNLOADS, "Go to downloads", CUI_ICON_LAYERS, "Go", "Ctrl 1");
@@ -2361,6 +2661,10 @@ static void run_command(App *a, int cmd) {
         else resume_selection(a);
         break;
     case CMD_REMOVE: request_remove(a); break;
+    case CMD_INFO:
+        if (a->selected[0]) open_info(a, a->selected);
+        else set_status(a, "Select a download first");
+        break;
     case CMD_SELECT_ALL: select_all(a); break;
     case CMD_CLEAR: selection_clear(a); a->details_open = false; break;
     case CMD_DOWNLOADS: a->view = VIEW_DOWNLOADS; break;
@@ -2487,6 +2791,7 @@ static void list_keys(App *a, cui_ctx *ui, bool vim) {
     }
     if (plain_key(ui, CUI_KEY_SLASH)) a->focus_search = true;
     if (plain_key(ui, CUI_KEY_O)) open_add(a);
+    if (plain_key(ui, CUI_KEY_I) && a->selected[0]) open_info(a, a->selected);
 }
 
 static void handle_keys(App *a, cui_ctx *ui) {
@@ -2508,6 +2813,11 @@ static void handle_keys(App *a, cui_ctx *ui) {
     }
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_N)) {
         open_add(a);
+        return;
+    }
+    if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_I)) {
+        if (a->selected[0]) open_info(a, a->selected);
+        else set_status(a, "Select a download first");
         return;
     }
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_F) && !vim) {
@@ -2616,6 +2926,7 @@ static void frame(cui_ctx *ui, void *user) {
     add_dialog(a, ui);
     schedule_dialog(a, ui);
     settings_dialog(a, ui);
+    info_tick(a, ui);
     info_dialog(a, ui);
     remove_dialog(a, ui);
     command_palette(a, ui);

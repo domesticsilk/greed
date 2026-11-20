@@ -23,7 +23,9 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
   remove them in one go
 - **CLI**: `greed add/list/status/pause/resume/remove/stats/shutdown`, with `--json` for
   `list` and `status`
-- **Torrents**: magnet links and `.torrent` files (file contents are base64-encoded for aria2)
+- **Torrents**: magnet links and `.torrent` files (file contents are base64-encoded for aria2);
+  the info dialog adds Files and Peers tabs with per-file progress, skipped files, seed/peer
+  state and live peer speeds from aria2
 - **Bandwidth control**: global download/upload caps in KB/s, applied to the running engine,
   with a live throughput chart that draws the cap on the line
 - **Seeding**: keep sharing completed torrents up to a chosen ratio
@@ -32,6 +34,8 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
 - **Scheduled downloads**: presets or an exact date and time; Greed hands the link to aria2 when it is due
 - **Settings**: General, Bandwidth, Torrents, Appearance and Keys tabs; theme, font family,
   text size, spacing, motion, engine limits and a keymap diagram
+- **Accessibility**: text meets WCAG AA on every theme surface, focus rings keep 3:1
+  non-text contrast, and the whole app works from the keyboard
 - **Clipboard monitoring**: offers a toast when a link is copied (toggleable)
 - **Notifications**: desktop notification when a download completes (toggleable)
 - **Session persistence**: the queue survives restarts through aria2's session file
@@ -103,10 +107,11 @@ Keyboard shortcuts:
 | List | `Up` `Down` `Home` `End` `PgUp` `PgDn` | Move the cursor |
 | List | `Enter` / `Space` / `Delete` | Details / pause or resume / remove |
 | List | `Ctrl+A` | Select all |
+| List | `Ctrl+I` | Download info (Overview, Files, Peers) |
 | Vim mode | `j` `k` `gg` `G` | Move the cursor |
 | Vim mode | `Ctrl+D` `Ctrl+U` | Page down / up |
 | Vim mode | `h` `l` | Previous / next tab |
-| Vim mode | `x` / `dd` / `o` / `/` | Toggle / remove / add / search |
+| Vim mode | `x` / `dd` / `o` / `/` / `i` | Toggle / remove / add / search / info |
 | Vim mode | `:` | Command palette |
 | No Vim | `Ctrl+F` | Search |
 
