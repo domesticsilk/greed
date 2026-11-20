@@ -189,7 +189,9 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
     c[CUI_TOKEN_SURFACE_MUTED] = CUI_RGB(t->muted);
     c[CUI_TOKEN_FOREGROUND] = CUI_RGB(t->text);
     c[CUI_TOKEN_TEXT_SECONDARY] = CUI_RGB(t->dim);
-    c[CUI_TOKEN_TEXT_MUTED] = cui_mix(CUI_RGB(t->dim), CUI_RGB(t->bg), 0.30f);
+    /* Muted labels still need AA: on dark themes fade only slightly, on light keep dim. */
+    c[CUI_TOKEN_TEXT_MUTED] = t->dark ? cui_mix(CUI_RGB(t->dim), CUI_RGB(t->bg), 0.10f)
+                                     : CUI_RGB(t->dim);
     c[CUI_TOKEN_BORDER] = CUI_RGB(t->border);
     c[CUI_TOKEN_BORDER_SUBTLE] = cui_mix(CUI_RGB(t->bg), CUI_RGB(t->border), 0.55f);
     c[CUI_TOKEN_BORDER_STRONG] = cui_mix(CUI_RGB(t->border), CUI_RGB(t->text), 0.35f);
