@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+struct json_object;
+
 typedef struct {
     pthread_mutex_t lock;
     bool running;
@@ -12,6 +14,9 @@ typedef struct {
     int total;
     char error[512];
 } YtdlpJob;
+
+/* Index of the best single-file format in a yt-dlp formats array, or -1. */
+int ytdlp_best_format(struct json_object *formats);
 
 void ytdlp_init(YtdlpJob *j);
 bool ytdlp_available(void);

@@ -67,6 +67,37 @@ static void safe_name(const char *title, const char *ext, char *out, size_t cap)
     else snprintf(out, cap, "%s", base);
 }
 
+int ytdlp_best_format(struct json_object *formats) {
+    if (!formats || !json_object_is_type(formats, json_type_array)) return -1;
+    int best = -1;
+    double best_score = -1;
+    int n = (int)json_object_array_length(formats);
+    for (int i = 0; i < n; i++) {
+        struct json_object *f = json_object_array_get_idx(formats, i);
+        const char *v = jstr(f, "vcodec");
+        const char *a = jstr(f, "acodec");
+        const char *u = jstr(f, "url");
+        if (!u || !u[0]) continue;
+        /* A null codec means the extractor did not report one; an explicit
+         * "none" means the stream is missing that track. */
+        if ((v && !strcmp(v, "none")) || (a && !strcmp(a, "none"))) continue;
+        /* aria2 downloads one file, not a DASH or HLS manifest. */
+        const char *proto = jstr(f, "protocol");
+        if (proto && proto[0] &&
+            (strstr(proto, "dash") || strstr(proto, "m3u8") ||
+             (strncmp(proto, "http", 4) && strncmp(proto, "ftp", 3))))
+            continue;
+        double score = jdouble(f, "height") + jdouble(f, "tbr") / 1000.0;
+        const char *ext = jstr(f, "ext");
+        if (ext && !strcmp(ext, "mp4")) score += 1000;
+        if (score > best_score) {
+            best_score = score;
+            best = i;
+        }
+    }
+    return best;
+}
+
 static bool resolve(const char *url, Resolved *out, char *err, size_t cap) {
     const char *bin = market_tool_path("yt-dlp", "yt-dlp");
     if (!bin) {
@@ -96,7 +127,11 @@ static bool resolve(const char *url, Resolved *out, char *err, size_t cap) {
             close(devnull);
         }
         alarm(90);
+        /* The default YouTube clients expose video and audio as separate
+         * streams. The android client still returns format 18, a single
+         * 360p mp4 with both tracks, which aria2 can download as one file. */
         execl(bin, bin, "-J", "--no-playlist", "--no-warnings", "--socket-timeout", "15",
+              "--extractor-args", "youtube:player_client=android",
               "--", url, (char *)NULL);
         _exit(127);
     }
@@ -141,29 +176,8 @@ static bool resolve(const char *url, Resolved *out, char *err, size_t cap) {
     const char *root_url = jstr(root, "url");
     const char *root_ext = jstr(root, "ext");
     struct json_object *formats = NULL;
-    int best = -1;
-    double best_score = -1;
-
-    if (json_object_object_get_ex(root, "formats", &formats) &&
-        json_object_is_type(formats, json_type_array)) {
-        int n = (int)json_object_array_length(formats);
-        for (int i = 0; i < n; i++) {
-            struct json_object *f = json_object_array_get_idx(formats, i);
-            const char *v = jstr(f, "vcodec");
-            const char *a = jstr(f, "acodec");
-            const char *u = jstr(f, "url");
-            if (!u || !u[0] || !v || !a || !strcmp(v, "none") || !strcmp(a, "none"))
-                continue;
-            double score = jdouble(f, "height") + jdouble(f, "tbr") / 1000.0;
-            const char *ext = jstr(f, "ext");
-            if (ext && !strcmp(ext, "mp4")) score += 1000;
-            if (score > best_score) {
-                best_score = score;
-                best = i;
-            }
-        }
-    }
-
+    json_object_object_get_ex(root, "formats", &formats);
+    int best = ytdlp_best_format(formats);
     struct json_object *chosen = best >= 0 ? json_object_array_get_idx(formats, best) : NULL;
     const char *url_out = chosen ? jstr(chosen, "url") : root_url;
     const char *ext = chosen ? jstr(chosen, "ext") : root_ext;

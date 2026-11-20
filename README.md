@@ -258,7 +258,9 @@ built-in copy when the network or the catalog is unavailable.
   are tracked in `installed.json` next to it. Remove deletes the installed file.
 - yt-dlp is the first engine. With it installed, the Add dialog offers "Resolve video pages with
   yt-dlp": Greed asks yt-dlp for the best single-file progressive stream and adds the direct URL
-  to aria2 with the headers that stream needs. Streams that need merging are not offered yet.
+  to aria2 with the headers that stream needs. YouTube exposes a combined 360p stream to this
+  resolver; sites that only offer separate video and audio streams need merging, which is not
+  offered yet.
 - Theme packs use Greed's theme JSON format. After installation they appear in
   Settings > Appearance next to the 76 built-in themes.
 - Installing a theme does not switch to it. Installed themes show Apply in the Marketplace and

@@ -76,6 +76,11 @@ target_include_directories(greed-proxy-check PRIVATE src ${JSONC_INCLUDE_DIRS})
 target_link_libraries(greed-proxy-check PRIVATE ${JSONC_LIBRARIES})
 add_test(NAME proxy COMMAND greed-proxy-check)
 
+add_executable(greed-ytdlp-check tests/ytdlp.c src/ytdlp.c)
+target_include_directories(greed-ytdlp-check PRIVATE src ${JSONC_INCLUDE_DIRS})
+target_link_libraries(greed-ytdlp-check PRIVATE ${JSONC_LIBRARIES} Threads::Threads)
+add_test(NAME ytdlp COMMAND greed-ytdlp-check)
+
 add_executable(greed-history-check tests/history.c src/history.c src/config.c)
 target_include_directories(greed-history-check PRIVATE src ${JSONC_INCLUDE_DIRS})
 target_link_libraries(greed-history-check PRIVATE ${JSONC_LIBRARIES})
