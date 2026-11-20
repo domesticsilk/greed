@@ -10,6 +10,7 @@
 #include "update.h"
 #include "version.h"
 #include "ytdlp.h"
+#include "ytdlp_logo.h"
 #include "x11.h"
 
 #include "cui.h"
@@ -2718,6 +2719,14 @@ static const char *market_icon(const MarketItem *it) {
     return CUI_ICON_PACKAGE;
 }
 
+static cui_texture ytdlp_logo_texture(cui_ctx *ui) {
+    static cui_texture tex;
+    if (!tex)
+        tex = cui_image_create(ui, GREED_YTDLP_LOGO_W, GREED_YTDLP_LOGO_H,
+                               greed_ytdlp_logo_rgba);
+    return tex;
+}
+
 static bool market_matches(const MarketItem *it, const char *query, int cat) {
     if (cat == 1 && it->kind != MKT_ENGINE) return false;
     if (cat == 2 && it->kind != MKT_TOOL) return false;
@@ -2736,6 +2745,9 @@ static void market_card(App *a, cui_ctx *ui, const MarketItem *it, int index, bo
     bool applied = theme && !strcmp(a->cfg.theme, it->name);
     bool downloading = a->mkt.job_item == index && a->mkt.job_stage == MKT_JOB_DOWNLOADING;
     bool failed = a->mkt.job_item == index && a->mkt.job_stage == MKT_JOB_ERROR;
+    /* The yt-dlp mark is red, so its tile ring follows the logo, not the catalog preview. */
+    bool ytdlp = !strcmp(it->id, "yt-dlp");
+    unsigned accent = ytdlp ? 0xff0700 : it->preview_accent;
     char size[32] = {0};
     if (it->size > 0) fmt_bytes(size, sizeof size, (unsigned long long)it->size);
 
@@ -2746,13 +2758,19 @@ static void market_card(App *a, cui_ctx *ui, const MarketItem *it, int index, bo
                     .bg = it->preview_bg ? CUI_RGB(it->preview_bg)
                                          : cui_color_of(ui, CUI_COLOR_SURFACE_RAISED),
                     .border = 1,
-                    .border_color = it->preview_accent ? CUI_RGB(it->preview_accent)
-                                                       : cui_color_of(ui, CUI_COLOR_BORDER)) {
+                    .border_color = accent ? CUI_RGB(accent)
+                                           : cui_color_of(ui, CUI_COLOR_BORDER)) {
                 cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_CENTER,
                         .justify = CUI_JUSTIFY_CENTER) {
-                    cui_icon(ui, market_icon(it), featured ? 24 : 18,
-                             it->preview_accent ? CUI_RGB(it->preview_accent)
-                                                : CUI_COLOR_ACCENT_STRONG);
+                    cui_texture logo = ytdlp ? ytdlp_logo_texture(ui) : 0;
+                    if (logo) {
+                        float side = featured ? 54 : 38;
+                        cui_image(ui, logo, .width = CUI_PX(side), .height = CUI_PX(side),
+                                  .radius = featured ? 8 : 6);
+                    } else {
+                        cui_icon(ui, market_icon(it), featured ? 24 : 18,
+                                 accent ? CUI_RGB(accent) : CUI_COLOR_ACCENT_STRONG);
+                    }
                 }
             }
             cui_column(ui, .width = CUI_FILL, .gap = 4) {
