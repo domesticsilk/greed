@@ -1,6 +1,10 @@
-# Greed
+<p align="center">
+  <img src="packaging/greed.png" width="104" alt="Greed icon">
+</p>
 
-**A dark, keyboard-first download manager for Linux.**
+<h1 align="center">Greed</h1>
+
+<p align="center"><strong>A dark, keyboard-first download manager for Linux.</strong></p>
 
 Greed pairs a native desktop window with a complete command-line interface in one C binary.
 Both drive the same aria2 session: a download started in the window appears in the terminal,
