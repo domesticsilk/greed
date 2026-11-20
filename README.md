@@ -29,6 +29,10 @@ A dark download manager for Linux. GUI and CLI in one C binary, powered by
   failed download from the row menu
 - **Bulk actions**: drag a selection band or check several downloads, then pause, resume or
   remove them in one go
+- **Desktop integration**: `greed <link>` opens the Add dialog prefilled; a second launch hands
+  its links to the running window and raises it; `.torrent`, `.metalink` and `magnet:` open
+  Greed from the file manager or browser; dropping `.torrent`/`.metalink` files on the window
+  adds them
 - **CLI**: `greed add/list/status/pause/resume/remove/stats/shutdown`, with `--json` for
   `list` and `status`
 - **Torrents**: magnet links and `.torrent` files (file contents are base64-encoded for aria2);
@@ -108,6 +112,9 @@ looks for that exact name and compares the release tag with `GREED_VERSION` in
 
 ```sh
 greed                              # open the GUI
+greed https://example.com/file.zip # open the GUI with the Add dialog filled
+greed magnet:?xt=urn:btih:...      # magnet in the Add dialog
+greed ./debian.torrent             # torrent or metalink file in the Add dialog
 greed add https://example.com/file.zip
 greed add magnet:?xt=urn:btih:...  # magnet
 greed add ./debian.torrent         # torrent file
@@ -122,7 +129,21 @@ greed shutdown                     # stop the aria2 engine
 ```
 
 `greed` with no arguments opens the GUI when `DISPLAY` or `WAYLAND_DISPLAY` is set, and
-prints help otherwise.
+prints help otherwise. A bare link or torrent/metalink path opens the GUI with the Add
+dialog filled; on a machine without a display it falls back to `greed add`.
+
+Only one GUI runs per user. A second `greed` or `greed <link>` writes the links to the
+running instance, raises its window and exits. The running window opens the Add dialog
+(or appends to the open one). The lock and handoff files live in `$XDG_RUNTIME_DIR`
+(`/tmp` when it is unset).
+
+`packaging/greed.desktop` registers `application/x-bittorrent`, `application/metalink4+xml`,
+`application/metalink+xml` and `x-scheme-handler/magnet`, and uses `Exec=greed %U`.
+Install it under `~/.local/share/applications/` and run
+`xdg-mime default greed.desktop application/x-bittorrent` (and the other types) to make
+Greed the handler. Drag and drop accepts `.torrent` and `.metalink` files; X11 only
+forwards file URIs, so a link dragged from a browser is not delivered (copying it is,
+through clipboard monitoring).
 
 Keyboard shortcuts:
 
@@ -220,6 +241,8 @@ The limits are in KB/s; 0 means unlimited. The aria2 session is saved next to it
 ```
 src/main.c     CLI/GUI dispatch
 src/ui.c       CUI interface: title bar, sidebar, table, details, dialogs, toasts
+src/links.c    link detection and file:// normalization
+src/single.c   single-instance lock, link handoff and window activation
 src/logo.h     titlebar wordmark alpha mask (generated asset)
 src/model.c    aria2 JSON parsing and formatters
 src/rpc.c      JSON-RPC over libcurl, aria2 discovery/spawn, base64

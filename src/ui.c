@@ -6,6 +6,7 @@
 #include "market.h"
 #include "model.h"
 #include "rpc.h"
+#include "single.h"
 #include "theme.h"
 #include "update.h"
 #include "version.h"
@@ -829,6 +830,12 @@ static bool is_torrent_path(const char *s) {
     return n > 8 && !strcmp(s + n - 8, ".torrent");
 }
 
+static bool is_metalink_path(const char *s) {
+    size_t n = strlen(s);
+    return (n > 9 && !strcmp(s + n - 9, ".metalink")) ||
+           (n > 6 && !strcmp(s + n - 6, ".meta4"));
+}
+
 static int add_links_impl(App *a, const char *text, const char *dir, const char *out, int conn,
                           bool ui_feedback) {
     char *copy = strdup(text);
@@ -853,15 +860,22 @@ static int add_links_impl(App *a, const char *text, const char *dir, const char 
         }
 
         struct json_object *result = NULL;
-        if (is_torrent_path(line) && access(line, R_OK) == 0) {
+        bool torrent = is_torrent_path(line);
+        bool metalink = is_metalink_path(line);
+        if ((torrent || metalink) && access(line, R_OK) == 0) {
             size_t b64len = 0;
             char *b64 = base64_file(line, &b64len);
             if (b64) {
                 struct json_object *params = json_object_new_array();
                 json_object_array_add(params, json_object_new_string_len(b64, (int)b64len));
-                json_object_array_add(params, json_object_new_array());
-                json_object_array_add(params, opts);
-                result = rpc_call(&a->rpc, "aria2.addTorrent", params);
+                if (torrent) {
+                    json_object_array_add(params, json_object_new_array());
+                    json_object_array_add(params, opts);
+                    result = rpc_call(&a->rpc, "aria2.addTorrent", params);
+                } else {
+                    json_object_array_add(params, opts);
+                    result = rpc_call(&a->rpc, "aria2.addMetalink", params);
+                }
                 free(b64);
             } else {
                 json_object_put(opts);
@@ -901,6 +915,36 @@ static int add_links_impl(App *a, const char *text, const char *dir, const char 
 
 static int add_links(App *a, const char *text, const char *dir, const char *out, int conn) {
     return add_links_impl(a, text, dir, out, conn, true);
+}
+
+/* Files dropped on the window: torrent and metalink files go straight to aria2.
+ * CUI only forwards file:// URIs, so a dragged browser link never arrives. */
+static void poll_drops(App *a, cui_ctx *ui) {
+    int n = cui_dropped_file_count(ui);
+    if (n <= 0) return;
+    char *text = NULL;
+    size_t used = 0;
+    int ignored = 0;
+    for (int i = 0; i < n; i++) {
+        const char *path = cui_dropped_file(ui, i);
+        if (!path || access(path, R_OK) != 0 ||
+            (!is_torrent_path(path) && !is_metalink_path(path))) {
+            ignored++;
+            continue;
+        }
+        size_t len = strlen(path);
+        char *grown = realloc(text, used + len + 2);
+        if (!grown) break;
+        text = grown;
+        if (used) text[used++] = '\n';
+        memcpy(text + used, path, len + 1);
+        used += len;
+    }
+    if (text)
+        add_links_impl(a, text, a->cfg.download_dir, NULL, a->cfg.max_concurrent, false);
+    else if (ignored)
+        set_status(a, "Drop a .torrent or .metalink file");
+    free(text);
 }
 
 /* Fire everything that is due; entries stay queued while aria2 is offline. */
@@ -3591,7 +3635,10 @@ static void frame(cui_ctx *ui, void *user) {
 
     if (!a->frame_ready) {
         void *native = cui_app_native_window(NULL);
-        if (frame_init(&a->frame, native)) frame_make_frameless(&a->frame);
+        if (frame_init(&a->frame, native)) {
+            frame_make_frameless(&a->frame);
+            single_set_window((unsigned long)a->frame.win);
+        }
         a->frame_ready = true;
     }
 
@@ -3600,12 +3647,25 @@ static void frame(cui_ctx *ui, void *user) {
     double now = cui_time(ui);
     if (now - a->last_poll >= 0.8) {
         a->last_poll = now;
+        char *handoff = single_take_handoff();
+        if (handoff) {
+            if (a->show_add && a->add_urls[0]) {
+                size_t used = strlen(a->add_urls);
+                if (used < sizeof a->add_urls - 1)
+                    snprintf(a->add_urls + used, sizeof a->add_urls - used, "\n%s", handoff);
+            } else {
+                open_add(a);
+                snprintf(a->add_urls, sizeof a->add_urls, "%s", handoff);
+            }
+            free(handoff);
+        }
         bool was_connected = a->connected;
         poll_engine(a);
         if (a->connected && (!was_connected || !a->engine_applied))
             apply_engine_options(a);
         sample_speed(a);
     }
+    poll_drops(a, ui);
     checksum_tick(a);
     schedule_tick(a);
     if (a->ytdlp_active) {
@@ -3710,9 +3770,16 @@ static void frame(cui_ctx *ui, void *user) {
     info_dialog(a, ui);
     remove_dialog(a, ui);
     command_palette(a, ui);
+
+    if (cui_file_drag_active(ui)) {
+        cui_vec2 vp = cui_viewport_size(ui);
+        cui_color accent = cui_color_of(ui, CUI_COLOR_ACCENT);
+        cui_overlay_rect(ui, (cui_rect){0, 0, vp.x, vp.y}, 0, cui_alpha(accent, 0.05f),
+                         cui_alpha(accent, 0.75f), 2);
+    }
 }
 
-int ui_run(void) {
+int ui_run(const char *initial_links) {
     Config cfg;
     config_load(&cfg);
     if (cfg.auto_start_aria2) aria2_ensure_running(&cfg, true);
@@ -3760,6 +3827,11 @@ int ui_run(void) {
         a->view = VIEW_SCHEDULED;
         open_schedule(a);
     } else if (demo && !strcmp(demo, "empty")) snprintf(a->filter, sizeof a->filter, "zzzz");
+
+    if (initial_links && initial_links[0]) {
+        open_add(a);
+        snprintf(a->add_urls, sizeof a->add_urls, "%s", initial_links);
+    }
 
     int rc = cui_app_run(&(cui_app_desc){.title = "Greed",
                                          .width = 1240,

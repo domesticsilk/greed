@@ -118,3 +118,23 @@ void frame_toggle_maximize(GreedFrame *f) {
     send_root_message(f, "_NET_WM_STATE", action, (long)vert, (long)horz, 1, 0);
     XSync(f->dpy, False);
 }
+
+bool x11_activate_window(unsigned long win) {
+    Display *dpy = XOpenDisplay(NULL);
+    if (!dpy) return false;
+    Window w = (Window)win;
+    XMapRaised(dpy, w);
+    XEvent ev;
+    memset(&ev, 0, sizeof ev);
+    ev.xclient.type = ClientMessage;
+    ev.xclient.window = w;
+    ev.xclient.message_type = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = 2; /* source: pager, accepted by stricter WMs */
+    ev.xclient.data.l[1] = CurrentTime;
+    XSendEvent(dpy, DefaultRootWindow(dpy), False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    XFlush(dpy);
+    XCloseDisplay(dpy);
+    return true;
+}

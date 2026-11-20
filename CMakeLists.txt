@@ -42,6 +42,8 @@ add_executable(greed
     src/ytdlp.c
     src/update.c
     src/x11.c
+    src/links.c
+    src/single.c
 )
 target_include_directories(greed PRIVATE src vendor/cui ${CMAKE_BINARY_DIR})
 target_compile_options(greed PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
@@ -63,5 +65,9 @@ target_compile_definitions(greed-contrast-check PRIVATE
                            GREED_MARKETPLACE_DIR="${CMAKE_SOURCE_DIR}/marketplace")
 target_link_libraries(greed-contrast-check PRIVATE cui_vendor ${JSONC_LIBRARIES} m)
 add_test(NAME contrast COMMAND greed-contrast-check)
+
+add_executable(greed-links-check tests/links.c)
+target_include_directories(greed-links-check PRIVATE src)
+add_test(NAME links COMMAND greed-links-check)
 
 install(TARGETS greed RUNTIME DESTINATION bin)

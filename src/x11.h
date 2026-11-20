@@ -19,4 +19,7 @@ void frame_minimize(GreedFrame *f);
 void frame_toggle_maximize(GreedFrame *f);
 bool frame_is_maximized(GreedFrame *f);
 
+/* Raise and focus another process's window on the current display. */
+bool x11_activate_window(unsigned long win);
+
 #endif
