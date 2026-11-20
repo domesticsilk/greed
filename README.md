@@ -6,9 +6,15 @@ engine and [CUI](https://github.com/yappologistic/CUI) for its interface.
 
 ![Greed](assets/screenshot.png)
 
-[![License: GPL-2.0](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
-![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
-![Language: C99](https://img.shields.io/badge/C-C99-blue.svg)
+[![License: GPL-2.0](https://img.shields.io/badge/License-GPL--2.0-1a1a1a?style=for-the-badge&labelColor=000000&logo=gnu&logoColor=ffffff)](LICENSE)
+![Platform: Linux](https://img.shields.io/badge/Platform-Linux-242424?style=for-the-badge&labelColor=0a0a0a&logo=linux&logoColor=ffffff)
+![Language: C99](https://img.shields.io/badge/Language-C99-2e2e2e?style=for-the-badge&labelColor=141414&logo=c&logoColor=ffffff)
+![Engine: aria2](https://img.shields.io/badge/Engine-aria2-383838?style=for-the-badge&labelColor=1e1e1e)
+![Interface: CUI 1.4.0](https://img.shields.io/badge/Interface-CUI_1.4.0-424242?style=for-the-badge&labelColor=282828)
+![Mode: GUI + CLI](https://img.shields.io/badge/Mode-GUI_%2B_CLI-4c4c4c?style=for-the-badge&labelColor=323232)
+![Themes: 76 built-in](https://img.shields.io/badge/Themes-76_built--in-565656?style=for-the-badge&labelColor=3c3c3c)
+![Downloads: BitTorrent + Metalink](https://img.shields.io/badge/Downloads-BitTorrent_%2B_Metalink-606060?style=for-the-badge&labelColor=464646)
+![Display: X11 + XWayland](https://img.shields.io/badge/Display-X11_%2B_XWayland-6a6a6a?style=for-the-badge&labelColor=505050)
 
 ## Contents
 
