@@ -210,6 +210,15 @@ bool aria2_spawn(const Config *cfg) {
         freopen("/dev/null", "w", stdout);
         freopen("/dev/null", "w", stderr);
         if (lib) setenv("LD_LIBRARY_PATH", lib, 1);
+        /* The proxy reaches aria2 before it resumes the session, and the
+         * credentials stay out of argv. */
+        const char *names[] = {"all_proxy", "http_proxy", "https_proxy", "ftp_proxy"};
+        for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+            if (cfg->proxy[0]) setenv(names[i], cfg->proxy, 1);
+            else unsetenv(names[i]);
+        }
+        if (cfg->proxy[0] && cfg->no_proxy[0]) setenv("no_proxy", cfg->no_proxy, 1);
+        else unsetenv("no_proxy");
         execv(bin, (char *const *)argv);
         _exit(127);
     }
@@ -227,6 +236,12 @@ bool aria2_apply_options(Rpc *r, const Config *cfg) {
     json_object_object_add(opts, "max-overall-download-limit", json_object_new_string(v));
     snprintf(v, sizeof v, "%lld", (long long)cfg->max_upload_limit * 1024);
     json_object_object_add(opts, "max-overall-upload-limit", json_object_new_string(v));
+    /* aria2 keeps a per-protocol proxy next to all-proxy, and the specific
+     * one wins. Set every protocol so a changed proxy really takes effect. */
+    static const char *proxy_keys[] = {"all-proxy", "http-proxy", "https-proxy", "ftp-proxy"};
+    for (size_t i = 0; i < sizeof proxy_keys / sizeof proxy_keys[0]; i++)
+        json_object_object_add(opts, proxy_keys[i], json_object_new_string(cfg->proxy));
+    json_object_object_add(opts, "no-proxy", json_object_new_string(cfg->no_proxy));
     if (cfg->seed_after_complete) {
         snprintf(v, sizeof v, "%.2f", (double)cfg->seed_ratio);
         json_object_object_add(opts, "seed-ratio", json_object_new_string(v));

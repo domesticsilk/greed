@@ -53,6 +53,8 @@ runtime in between.
 - Bundled aria2 runtime, with a fallback to the system `aria2c`
 - Global download and upload limits in KB/s, applied live, with a throughput chart that draws
   the cap
+- HTTP proxy support with optional credentials and a bypass list, applied to the running engine
+  when settings are saved
 - Seeding control: keep sharing completed torrents up to a chosen ratio
 - Scheduled downloads by preset or exact date and time
 - Torrent inspector with per-file progress, skipped files, peer state and live peer speeds
@@ -76,7 +78,7 @@ runtime in between.
 - Statistics view with a 60-second chart, peak marker, live speeds and a download-folder card
   with free space and an Open folder button
 - Clipboard monitoring and desktop notifications on completion
-- Settings for General, Bandwidth, Torrents, Appearance, Keys and Updates, including theme, any
+- Settings for General, Network, Torrents, Appearance, Keys and Updates, including theme, any
   installed font, logo style, text size, sidebar width, spacing, motion, engine limits and a
   keymap diagram
 
@@ -283,6 +285,8 @@ Greed reads `~/.config/greed/config.json`, or `$XDG_CONFIG_HOME/greed/config.jso
   "rpc_port": 6800,
   "max_download_limit": 0,
   "max_upload_limit": 0,
+  "proxy": "",
+  "no_proxy": "",
   "seed_after_complete": true,
   "seed_ratio": 1.0,
   "auto_start_aria2": true,
@@ -310,6 +314,11 @@ logo. `sidebar_width` is in pixels from 140 to 420, where 0 uses the theme defau
 with macOS chrome). `text_scale` ranges from 0.85 to 1.3 and `spacing` from 0.9 to 1.12. The same
 values can be changed in Settings > Appearance, where the font list is searchable and the sidebar
 width also has a slider.
+
+`proxy` is an HTTP proxy URL in `[http://][user:pass@]host:port` form. `no_proxy` is a
+comma-separated list of hosts that skip it. Both are available in Settings > Network and reach
+the running engine when saved. The config file is written with owner-only permissions because
+the URL may carry credentials.
 
 `columns` is a bitmask of the visible table columns: Name 1, Size 2, Progress 4, Speed 8, ETA 16,
 Added 32, Location 64, Connections 128 and Status 256. Name is always visible. `sort_column`

@@ -30,6 +30,8 @@ typedef struct {
     int rpc_port;
     int max_download_limit;    /* KB/s, 0 = unlimited */
     int max_upload_limit;      /* KB/s, 0 = unlimited */
+    char proxy[256];           /* HTTP proxy URL, optional user:pass@ */
+    char no_proxy[256];        /* comma-separated hosts that skip the proxy */
     bool seed_after_complete;
     float seed_ratio;
     bool auto_start_aria2;
@@ -61,6 +63,10 @@ typedef struct {
 void config_defaults(Config *c);
 void config_load(Config *c);
 bool config_save(const Config *c);
+/* Trims both fields and adds http:// when the proxy has no scheme. */
+void config_normalize_proxy(Config *c);
+/* NULL when the proxy URL is usable, otherwise a short message. */
+const char *config_proxy_error(const char *url);
 int config_schedules_load(GreedScheduled *out, int cap);
 bool config_schedules_save(const GreedScheduled *items, int count);
 const char *config_dir(void);

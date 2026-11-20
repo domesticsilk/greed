@@ -71,6 +71,11 @@ add_executable(greed-links-check tests/links.c)
 target_include_directories(greed-links-check PRIVATE src)
 add_test(NAME links COMMAND greed-links-check)
 
+add_executable(greed-proxy-check tests/proxy.c src/config.c)
+target_include_directories(greed-proxy-check PRIVATE src ${JSONC_INCLUDE_DIRS})
+target_link_libraries(greed-proxy-check PRIVATE ${JSONC_LIBRARIES})
+add_test(NAME proxy COMMAND greed-proxy-check)
+
 add_executable(greed-history-check tests/history.c src/history.c src/config.c)
 target_include_directories(greed-history-check PRIVATE src ${JSONC_INCLUDE_DIRS})
 target_link_libraries(greed-history-check PRIVATE ${JSONC_LIBRARIES})

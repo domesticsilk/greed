@@ -26,7 +26,7 @@ const char *aria2_binary(void);
 const char *aria2_lib_dir(void);
 bool aria2_available(void);
 bool aria2_spawn(const Config *cfg);
-/* Applies the config's global limits to a running engine. */
+/* Applies the config's global limits and proxy to a running engine. */
 bool aria2_apply_options(Rpc *r, const Config *cfg);
 bool aria2_apply_seed_options(Rpc *r, const char *gid, const Config *cfg);
 /* Starts aria2 when it is not running. Returns true when the RPC answers. */

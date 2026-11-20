@@ -1,11 +1,15 @@
 #include "config.h"
 
+#include <ctype.h>
+#include <fcntl.h>
 #include <json-c/json.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static char dir_buf[PATH_MAX];
 
@@ -55,9 +59,52 @@ void config_expand_tilde(char *path) {
     snprintf(path, PATH_MAX, "%s", out);
 }
 
+static void trim_in_place(char *s) {
+    char *start = s;
+    while (*start && isspace((unsigned char)*start)) start++;
+    if (start != s) memmove(s, start, strlen(start) + 1);
+    size_t n = strlen(s);
+    while (n && isspace((unsigned char)s[n - 1])) s[--n] = 0;
+}
+
+void config_normalize_proxy(Config *c) {
+    trim_in_place(c->proxy);
+    trim_in_place(c->no_proxy);
+    if (c->proxy[0] && !strstr(c->proxy, "://")) {
+        char out[sizeof c->proxy];
+        snprintf(out, sizeof out, "http://%s", c->proxy);
+        snprintf(c->proxy, sizeof c->proxy, "%s", out);
+    }
+}
+
+const char *config_proxy_error(const char *url) {
+    if (!url || !url[0]) return NULL;
+    for (const char *p = url; *p; p++)
+        if (isspace((unsigned char)*p)) return "Remove spaces from the proxy URL.";
+    const char *host = url;
+    const char *scheme = strstr(url, "://");
+    if (scheme) {
+        if ((size_t)(scheme - url) != 4 || strncasecmp(url, "http", 4))
+            return "Use an http:// proxy URL.";
+        host = scheme + 3;
+    }
+    const char *at = strrchr(host, '@');
+    if (at) host = at + 1;
+    if (!host[0] || host[0] == ':') return "Add a proxy host and port.";
+    if (strchr(host, '/')) return "Use host:port without a path.";
+    return NULL;
+}
+
 void config_defaults(Config *c) {
     memset(c, 0, sizeof *c);
     snprintf(c->download_dir, sizeof c->download_dir, "~/Downloads");
+    const char *proxy = getenv("all_proxy");
+    if (!proxy || !proxy[0]) proxy = getenv("https_proxy");
+    if (!proxy || !proxy[0]) proxy = getenv("http_proxy");
+    if (proxy && proxy[0]) snprintf(c->proxy, sizeof c->proxy, "%s", proxy);
+    const char *no_proxy = getenv("no_proxy");
+    if (no_proxy && no_proxy[0])
+        snprintf(c->no_proxy, sizeof c->no_proxy, "%s", no_proxy);
     c->max_concurrent = 5;
     c->rpc_port = 6800;
     c->max_download_limit = 0;
@@ -130,6 +177,10 @@ void config_load(Config *c) {
             c->rpc_port = jint(v, "rpc_port", c->rpc_port);
             c->max_download_limit = jint(v, "max_download_limit", c->max_download_limit);
             c->max_upload_limit = jint(v, "max_upload_limit", c->max_upload_limit);
+            const char *proxy = jstr(v, "proxy");
+            if (proxy) snprintf(c->proxy, sizeof c->proxy, "%s", proxy);
+            const char *no_proxy = jstr(v, "no_proxy");
+            if (no_proxy) snprintf(c->no_proxy, sizeof c->no_proxy, "%s", no_proxy);
             c->seed_after_complete = jbool(v, "seed_after_complete", c->seed_after_complete);
             c->seed_ratio = (float)jdouble(v, "seed_ratio", c->seed_ratio);
             c->auto_start_aria2 = jbool(v, "auto_start_aria2", c->auto_start_aria2);
@@ -176,6 +227,8 @@ void config_load(Config *c) {
     }
     free(text);
     fclose(f);
+    chmod(config_path(), 0600);
+    config_normalize_proxy(c);
     config_expand_tilde(c->download_dir);
 }
 
@@ -187,6 +240,8 @@ bool config_save(const Config *c) {
     json_object_object_add(v, "rpc_port", json_object_new_int(c->rpc_port));
     json_object_object_add(v, "max_download_limit", json_object_new_int(c->max_download_limit));
     json_object_object_add(v, "max_upload_limit", json_object_new_int(c->max_upload_limit));
+    json_object_object_add(v, "proxy", json_object_new_string(c->proxy));
+    json_object_object_add(v, "no_proxy", json_object_new_string(c->no_proxy));
     json_object_object_add(v, "seed_after_complete", json_object_new_boolean(c->seed_after_complete));
     json_object_object_add(v, "seed_ratio", json_object_new_double(c->seed_ratio));
     json_object_object_add(v, "auto_start_aria2", json_object_new_boolean(c->auto_start_aria2));
@@ -210,7 +265,13 @@ bool config_save(const Config *c) {
         json_object_array_add(widths, json_object_new_int(c->col_width[i]));
     json_object_object_add(v, "col_widths", widths);
     const char *text = json_object_to_json_string_ext(v, JSON_C_TO_STRING_PRETTY);
-    FILE *f = fopen(config_path(), "w");
+    int fd = open(config_path(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    FILE *f = NULL;
+    if (fd >= 0) {
+        fchmod(fd, 0600);
+        f = fdopen(fd, "w");
+        if (!f) close(fd);
+    }
     bool ok = false;
     if (f) {
         ok = fputs(text, f) >= 0;

@@ -2726,7 +2726,7 @@ static void updates_tab(App *a, cui_ctx *ui) {
 
 static void settings_dialog(App *a, cui_ctx *ui) {
     if (!a->show_settings) return;
-    static const char *tabs[] = {"General", "Bandwidth", "Torrents", "Appearance", "Keys",
+    static const char *tabs[] = {"General", "Network", "Torrents", "Appearance", "Keys",
                                  "Updates"};
     static const char *icons[] = {CUI_ICON_SETTINGS, CUI_ICON_SLIDERS_HORIZONTAL,
                                   CUI_ICON_GLOBE, CUI_ICON_PALETTE, CUI_ICON_KEYBOARD,
@@ -2839,6 +2839,20 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                                .show_value = true, .format = "%.0f KB/s", .width = CUI_FILL))
                     a->edit.max_upload_limit = (int)upload;
                 cui_muted(ui, "The status bar shows the current transfer rates.");
+
+                cui_heading(ui, "Proxy", 4);
+                cui_muted(ui, "Route every download through an HTTP proxy. Leave empty for a "
+                              "direct connection.");
+                cui_label(ui, "Proxy URL");
+                cui_input(ui, "set-proxy", a->edit.proxy, sizeof a->edit.proxy,
+                          .placeholder = "http://user:pass@host:port",
+                          .error = config_proxy_error(a->edit.proxy), .width = CUI_FILL);
+                cui_label(ui, "Bypass proxy for");
+                cui_input(ui, "set-no-proxy", a->edit.no_proxy, sizeof a->edit.no_proxy,
+                          .placeholder = "localhost, 127.0.0.1, .internal",
+                          .width = CUI_FILL);
+                cui_muted(ui, "Comma-separated hosts. Both fields reach the engine when you "
+                              "save.");
             } else if (a->settings_tab == 2) {
                 cui_heading(ui, "Seeding", 4);
                 cui_switch(ui, "Keep seeding after download",
@@ -2937,13 +2951,19 @@ static void settings_dialog(App *a, cui_ctx *ui) {
         cui_dialog_footer(ui) {
             if (cui_button(ui, "Cancel", .variant = CUI_BUTTON_GHOST)) a->show_settings = false;
             if (cui_button(ui, "Save", .variant = CUI_BUTTON_PRIMARY)) {
-                a->cfg = a->edit;
-                if (!config_save(&a->cfg)) set_status(a, "Could not save settings");
-                else set_status(a, "Settings saved");
-                a->engine_applied = false;
-                apply_engine_options(a);
-                a->show_settings = false;
-                a->last_poll = 0;
+                config_normalize_proxy(&a->edit);
+                const char *proxy_err = config_proxy_error(a->edit.proxy);
+                if (proxy_err) {
+                    set_status(a, proxy_err);
+                } else {
+                    a->cfg = a->edit;
+                    if (!config_save(&a->cfg)) set_status(a, "Could not save settings");
+                    else set_status(a, "Settings saved");
+                    a->engine_applied = false;
+                    apply_engine_options(a);
+                    a->show_settings = false;
+                    a->last_poll = 0;
+                }
             }
         }
     }
