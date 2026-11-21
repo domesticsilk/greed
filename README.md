@@ -124,13 +124,13 @@ runtime in between.
 Arch:
 
 ```sh
-sudo pacman -S base-devel cmake curl json-c libx11
+sudo pacman -S base-devel cmake curl json-c libx11 libxext
 ```
 
 Debian/Ubuntu:
 
 ```sh
-sudo apt install build-essential cmake libcurl4-openssl-dev libjson-c-dev libx11-dev
+sudo apt install build-essential cmake pkg-config libcurl4-openssl-dev libjson-c-dev libx11-dev libxext-dev
 ```
 
 aria2 is bundled, so no separate installation is required. A system `aria2c` is used only when
@@ -181,17 +181,19 @@ or start the file with `--appimage-extract-and-run`.
 
 ## Browser extension
 
-`extension/` is a Chromium extension for Chrome, Chromium, Brave, Edge, Vivaldi and Opera. It
-sends the link under the cursor to Greed through a native messaging helper written in C.
+`extension/` is a Chromium extension for Chrome, Chromium, Helium, Brave, Edge, Vivaldi and
+Opera. It sends the link under the cursor to Greed through a native messaging helper written in C.
 
 ```sh
 greed browser install
 ```
 
 That registers the helper for every browser profile it finds. Then open `chrome://extensions`,
-enable Developer mode, choose Load unpacked and select the `extension/` folder. Right-click a
-link, image, video or audio and choose Download with Greed. The helper starts Greed when it is
-not already running. See [extension/README.md](extension/README.md) for limits and removal.
+enable Developer mode, choose Load unpacked and select the `extension/` folder. With the release
+archive, unzip `Greed-extension.zip` and select that folder; packages install the same files under
+`/usr/share/greed/extension`. Right-click a link, image, video or audio and choose Download with
+Greed. The helper starts Greed when it is not already running. See
+[extension/README.md](extension/README.md) for limits and removal.
 
 ## Usage
 
@@ -230,6 +232,11 @@ greed shutdown                     # stop the aria2 engine
 Only one GUI runs per user. A second `greed` or `greed <link>` writes the links to the running
 instance, raises its window and exits. The running window opens the Add dialog, or appends to the
 open one. The lock and handoff files live in `$XDG_RUNTIME_DIR`, or `/tmp` when it is unset.
+
+### Background engine
+
+aria2 runs as a daemon. Closing the Greed window leaves active and waiting downloads running;
+start Greed again to reconnect. `greed shutdown` stops the engine and any running downloads.
 
 ### Desktop integration
 

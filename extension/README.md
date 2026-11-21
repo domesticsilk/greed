@@ -1,6 +1,6 @@
 # Greed browser extension
 
-Sends links from Chrome, Chromium, Brave, Edge, Vivaldi or Opera to Greed.
+Sends links from Chrome, Chromium, Helium, Brave, Edge, Vivaldi or Opera to Greed.
 
 ## Install
 
