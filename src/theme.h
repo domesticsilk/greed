@@ -27,6 +27,10 @@ typedef struct {
     GreedMaterial material;
     uint32_t glass_tint, glass_highlight;
     float glass_tint_alpha, glass_highlight_alpha, glass_shadow_alpha;
+    /* Optional background image. The path is absolute once loaded. */
+    const char *wallpaper;
+    float wallpaper_scrim; /* background painted over the image, 0..1 */
+    float surface_alpha;   /* opacity of surface fills, 0..1 */
 } GreedTheme;
 
 extern const GreedTheme greed_themes[];

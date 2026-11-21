@@ -131,6 +131,9 @@ typedef struct {
     bool show_add;
     bool show_settings;
     bool show_market;
+    cui_texture wallpaper_tex;
+    char wallpaper_path[PATH_MAX];
+    int wallpaper_w, wallpaper_h;
     bool traffic_hover[3];
     char market_query[64];
     int market_cat;
@@ -343,6 +346,39 @@ static void apply_theme(cui_ctx *ui, App *a) {
     greed_theme_apply(ui, greed_theme_find(c->theme), c->motion_speed, c->text_scale, c->spacing);
     /* CUI's springs and tweens snap when the motion token is zero. */
     if (!c->animations) cui_theme_get(ui)->motion = 0.0f;
+}
+
+static void wallpaper_sync(cui_ctx *ui, App *a) {
+    const GreedTheme *t = active_theme(a);
+    const char *path = t->wallpaper ? t->wallpaper : "";
+    if (!strcmp(a->wallpaper_path, path)) return;
+    if (a->wallpaper_tex) cui_image_destroy(ui, a->wallpaper_tex);
+    a->wallpaper_tex = 0;
+    a->wallpaper_w = a->wallpaper_h = 0;
+    snprintf(a->wallpaper_path, sizeof a->wallpaper_path, "%s", path);
+    if (path[0])
+        a->wallpaper_tex = cui_image_load(ui, path, &a->wallpaper_w, &a->wallpaper_h);
+}
+
+typedef struct {
+    cui_texture tex;
+    int w, h;
+} WallpaperPaint;
+
+/* Cover-crop the image so it fills the window without stretching. */
+static void paint_wallpaper(cui_ctx *ui, cui_rect r, void *user) {
+    WallpaperPaint *wp = user;
+    if (!wp->tex || wp->w <= 0 || wp->h <= 0 || r.w <= 0 || r.h <= 0) return;
+    float ra = r.w / r.h, ia = (float)wp->w / (float)wp->h;
+    cui_rect uv = {0, 0, 1, 1};
+    if (ia > ra) {
+        float u = ra / ia;
+        uv = (cui_rect){(1 - u) * 0.5f, 0, u, 1};
+    } else {
+        float v = ia / ra;
+        uv = (cui_rect){0, (1 - v) * 0.5f, 1, v};
+    }
+    cui_draw_image(ui, wp->tex, r, uv, CUI_CORNERS(0), CUI_RGB(0xffffff));
 }
 
 static void apply_theme_name(App *a, const char *name) {
@@ -4075,8 +4111,11 @@ static void handle_keys(App *a, cui_ctx *ui) {
 static void frame(cui_ctx *ui, void *user) {
     App *a = user;
     apply_theme(ui, a);
+    wallpaper_sync(ui, a);
     apply_typography(a, ui);
     bool mac = mac_chrome(a);
+    const GreedTheme *theme = active_theme(a);
+    bool wallpaper = theme->wallpaper && a->wallpaper_tex;
 
     /* At the root, overlay coordinates are window coordinates, matching the cursor. */
     if (a->drag_active && a->drag_moved) {
@@ -4185,7 +4224,17 @@ static void frame(cui_ctx *ui, void *user) {
         a->clip_toast = -1;
     }
 
-    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL, .bg = CUI_COLOR_BACKGROUND) {
+    if (wallpaper) {
+        /* Drawn before the node tree, so it sits under every panel. */
+        cui_vec2 vp = cui_viewport_size(ui);
+        WallpaperPaint wp = {a->wallpaper_tex, a->wallpaper_w, a->wallpaper_h};
+        paint_wallpaper(ui, (cui_rect){0, 0, vp.x, vp.y}, &wp);
+        cui_draw_rect(ui, (cui_rect){0, 0, vp.x, vp.y}, CUI_CORNERS(0),
+                      cui_alpha(CUI_RGB(theme->bg), theme->wallpaper_scrim));
+    }
+
+    cui_column(ui, .width = CUI_FILL, .height = CUI_FILL,
+               .bg = wallpaper ? CUI_TRANSPARENT : CUI_COLOR_BACKGROUND) {
         titlebar(a, ui);
         frame_interactions(a, ui);
         if (!mac) cui_separator(ui);

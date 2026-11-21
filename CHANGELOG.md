@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Interface
+
+- Theme packs can ship a wallpaper. Greed cover-crops it behind the interface, paints the theme
+  background over it at `wallpaper_scrim`, and keeps panels translucent with `surface_alpha`.
+  Text colours are checked against the scrimmed worst case.
+- Ado and Echidna join the Marketplace. Ado is a dark stage with electric blue; Echidna is warm
+  parchment with deep violet and muted gold.
+- Installing a theme with a wallpaper downloads and verifies both files; Remove deletes both.
+
 ## 0.1.0 - 2026-11-21
 
 First public release.

@@ -344,11 +344,13 @@ optional engines, tools and theme packs from
 built-in copy when the network or the catalog is unavailable.
 
 - Every asset is downloaded to a temporary file, checked against the `sha256` in the catalog,
-  and only then moved into place.
+  and only then moved into place. A theme with a wallpaper is two assets: both are checked
+  before either is installed.
 - Installs go to `~/.local/share/greed/` (or `$XDG_DATA_HOME/greed/`): themes under `themes/`,
   tools under `tools/<id>/`. Nothing outside that folder is written.
 - The catalog is cached as `~/.local/share/greed/marketplace/catalog.json`, and installed items
-  are tracked in `installed.json` next to it. Remove deletes the installed file.
+  are tracked in `installed.json` next to it. Remove deletes the installed file, and the
+  wallpaper too when the theme shipped one.
 - yt-dlp resolves video pages. Install it, enable "Resolve video pages with yt-dlp" in the Add
   dialog, and pick Best, 1080p, 720p, 480p or 360p. Greed prefers a single progressive stream at
   the requested height. When the site only offers separate streams, it downloads the video and
@@ -372,10 +374,15 @@ built-in copy when the network or the catalog is unavailable.
   `glass` object with `tint`, `tint_alpha`, `highlight`, `highlight_alpha` and `shadow_alpha`.
   Liquid Glass uses both. macOS chrome also prefers SF Pro Text/Display, then Inter, when `font`
   is `default`.
+- A theme may also set `wallpaper` (a filename next to the theme JSON), `wallpaper_scrim` (0 to
+  1, how strongly the background colour covers the image; default 0.65) and `surface_alpha`
+  (0 to 1, panel opacity; default 0.84). The image is cover-cropped behind the interface, and
+  text colours are checked against the scrimmed worst case. Ado and Echidna use this.
 
 `marketplace/catalog.json` documents the catalog format: each item has an `id`, a `type`
 (`engine`, `tool` or `theme`), a version, an asset URL, a SHA-256 and an optional preview
-palette.
+palette. A theme with a wallpaper adds a `wallpaper` object with its own `url`, `sha256` and
+`name`; the name must be a plain filename, because it is installed next to the theme JSON.
 
 ## Configuration
 

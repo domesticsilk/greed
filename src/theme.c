@@ -175,6 +175,7 @@ const int greed_theme_count = (int)(sizeof greed_themes / sizeof greed_themes[0]
 
 static GreedTheme external[GREED_MAX_EXTERNAL_THEMES];
 static char external_names[GREED_MAX_EXTERNAL_THEMES][64];
+static char external_wallpapers[GREED_MAX_EXTERNAL_THEMES][PATH_MAX];
 static int external_count;
 static bool external_loaded;
 
@@ -292,6 +293,28 @@ static void load_theme_file(const char *path) {
         if (t.glass_highlight_alpha > 1) t.glass_highlight_alpha = 1;
         if (t.glass_shadow_alpha < 0) t.glass_shadow_alpha = 0;
         if (t.glass_shadow_alpha > 1) t.glass_shadow_alpha = 1;
+    }
+
+    const char *wallpaper = jstr(root, "wallpaper");
+    t.wallpaper_scrim = (float)jdouble(root, "wallpaper_scrim", 0.65);
+    t.surface_alpha = (float)jdouble(root, "surface_alpha", 0.84);
+    if (t.wallpaper_scrim < 0) t.wallpaper_scrim = 0;
+    if (t.wallpaper_scrim > 1) t.wallpaper_scrim = 1;
+    if (t.surface_alpha <= 0) t.surface_alpha = 1;
+    if (t.surface_alpha > 1) t.surface_alpha = 1;
+    if (wallpaper && wallpaper[0]) {
+        char *out = external_wallpapers[external_count];
+        if (wallpaper[0] == '/') {
+            snprintf(out, PATH_MAX, "%s", wallpaper);
+        } else {
+            char dir[PATH_MAX];
+            snprintf(dir, sizeof dir, "%s", path);
+            char *slash = strrchr(dir, '/');
+            if (slash) *slash = 0;
+            else snprintf(dir, sizeof dir, ".");
+            snprintf(out, PATH_MAX, "%s/%s", dir, wallpaper);
+        }
+        t.wallpaper = out;
     }
 
     struct json_object *series = NULL;
@@ -482,27 +505,41 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
     float subtle_a = t->dark ? 0.18f : 0.14f;
     cui_color surfaces[16];
     int surface_count = theme_surfaces(t, base, accent, subtle_a, surfaces);
+    /* With a wallpaper the real fills sit on the scrimmed art, so readable
+     * colours are tuned against that worst case instead of the opaque palette. */
+    bool wallpaper = t->wallpaper && t->wallpaper[0];
+    cui_color wall[17];
+    int wall_count = 0;
+    if (wallpaper) {
+        cui_color extreme = t->dark ? white : black;
+        cui_color scrim = mix_srgb(bg, extreme, 1 - t->wallpaper_scrim);
+        wall[wall_count++] = scrim;
+        for (int i = 0; i < surface_count; i++)
+            wall[wall_count++] = mix_srgb(scrim, surfaces[i], t->surface_alpha);
+    }
+    const cui_color *on = wallpaper ? wall : surfaces;
+    int on_count = wallpaper ? wall_count : surface_count;
     /* The tint can lift a dark fill past the point where tinted text still passes. */
-    text_toward = min_on(text, surfaces, surface_count) >= 4.5f
+    text_toward = min_on(text, on, on_count) >= 4.5f
                       ? text
-                      : (min_on(white, surfaces, surface_count) >=
-                                 min_on(black, surfaces, surface_count)
-                             ? white
-                             : black);
-    cui_color secondary = readable_on(CUI_RGB(t->dim), surfaces, surface_count, text_toward);
+                      : (min_on(white, on, on_count) >= min_on(black, on, on_count) ? white
+                                                                                    : black);
+    cui_color secondary = readable_on(CUI_RGB(t->dim), on, on_count, text_toward);
     cui_color muted =
-        readable_on(mix_srgb(CUI_RGB(t->dim), bg, 0.12f), surfaces, surface_count, text_toward);
+        readable_on(mix_srgb(CUI_RGB(t->dim), bg, 0.12f), on, on_count, text_toward);
     /* Keep muted below secondary: AA is the floor, not a reason to outshine it. */
-    if (min_on(muted, surfaces, surface_count) > min_on(secondary, surfaces, surface_count))
+    if (min_on(muted, on, on_count) > min_on(secondary, on, on_count))
         muted = secondary;
     cui_color accent_fg = readable_on(
         CUI_RGB(t->accent_fg), &accent, 1,
         color_contrast(white, accent) >= color_contrast(black, accent) ? white : black);
     c[CUI_TOKEN_BACKGROUND] = bg;
-    c[CUI_TOKEN_SURFACE] = base[1];
-    c[CUI_TOKEN_SURFACE_RAISED] = base[2];
-    c[CUI_TOKEN_SURFACE_MUTED] = base[3];
-    c[CUI_TOKEN_FOREGROUND] = readable_on(text, surfaces, surface_count, text_toward);
+    /* A wallpaper needs the panels to let it through; the scrim keeps text readable. */
+    float surface_a = wallpaper ? t->surface_alpha : 1.0f;
+    c[CUI_TOKEN_SURFACE] = cui_alpha(base[1], surface_a);
+    c[CUI_TOKEN_SURFACE_RAISED] = cui_alpha(base[2], surface_a);
+    c[CUI_TOKEN_SURFACE_MUTED] = cui_alpha(base[3], surface_a);
+    c[CUI_TOKEN_FOREGROUND] = readable_on(text, on, on_count, text_toward);
     c[CUI_TOKEN_TEXT_SECONDARY] = secondary;
     c[CUI_TOKEN_TEXT_MUTED] = muted;
     c[CUI_TOKEN_BORDER] = CUI_RGB(t->border);
@@ -510,20 +547,20 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
     c[CUI_TOKEN_BORDER_STRONG] = cui_mix(CUI_RGB(t->border), CUI_RGB(t->text), 0.35f);
     c[CUI_TOKEN_ACCENT] = accent;
     c[CUI_TOKEN_ACCENT_STRONG] =
-        readable_on(CUI_RGB(t->accent_strong), surfaces, surface_count, text_toward);
+        readable_on(CUI_RGB(t->accent_strong), on, on_count, text_toward);
     c[CUI_TOKEN_ACCENT_SUBTLE] = cui_alpha(accent, subtle_a);
     c[CUI_TOKEN_ACCENT_FOREGROUND] = accent_fg;
     c[CUI_TOKEN_SUCCESS] =
-        readable_on(mix_srgb(CUI_RGB(t->success), text, 0.08f), surfaces, surface_count, text_toward);
+        readable_on(mix_srgb(CUI_RGB(t->success), text, 0.08f), on, on_count, text_toward);
     c[CUI_TOKEN_WARNING] =
-        readable_on(mix_srgb(CUI_RGB(t->warning), text, 0.08f), surfaces, surface_count, text_toward);
+        readable_on(mix_srgb(CUI_RGB(t->warning), text, 0.08f), on, on_count, text_toward);
     c[CUI_TOKEN_DANGER] =
-        readable_on(mix_srgb(CUI_RGB(t->danger), text, 0.08f), surfaces, surface_count, text_toward);
+        readable_on(mix_srgb(CUI_RGB(t->danger), text, 0.08f), on, on_count, text_toward);
     c[CUI_TOKEN_INFO] =
-        readable_on(mix_srgb(CUI_RGB(t->info), text, 0.08f), surfaces, surface_count, text_toward);
-    c[CUI_TOKEN_HOVER] = hover;
-    c[CUI_TOKEN_ACTIVE] = active;
-    c[CUI_TOKEN_FOCUS_RING] = ring_on(CUI_RGB(t->accent_strong), surfaces, surface_count, text_toward);
+        readable_on(mix_srgb(CUI_RGB(t->info), text, 0.08f), on, on_count, text_toward);
+    c[CUI_TOKEN_HOVER] = cui_alpha(hover, surface_a);
+    c[CUI_TOKEN_ACTIVE] = cui_alpha(active, surface_a);
+    c[CUI_TOKEN_FOCUS_RING] = ring_on(CUI_RGB(t->accent_strong), on, on_count, text_toward);
     c[CUI_TOKEN_CONTROL_ON] = accent;
     c[CUI_TOKEN_CONTROL_GLYPH] = accent_fg;
     c[CUI_TOKEN_CONTROL_TRACK] = cui_mix(CUI_RGB(t->bg), CUI_RGB(t->border), 0.6f);

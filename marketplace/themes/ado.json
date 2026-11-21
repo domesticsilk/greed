@@ -1,0 +1,29 @@
+{
+  "name": "Ado",
+  "dark": true,
+  "bg": "#05071a",
+  "surface": "#0b1029",
+  "raised": "#131a3a",
+  "muted": "#06081a",
+  "text": "#e9edf7",
+  "dim": "#aab4c8",
+  "border": "#29325a",
+  "accent": "#5574ff",
+  "accent_strong": "#9fb2ff",
+  "accent_fg": "#050a20",
+  "danger": "#ff8a9c",
+  "success": "#56c8b4",
+  "warning": "#d9b36a",
+  "info": "#5fb8e6",
+  "wallpaper": "ado.jpg",
+  "wallpaper_scrim": 0.78,
+  "surface_alpha": 0.82,
+  "series": [
+    "#5574ff",
+    "#56c8b4",
+    "#d9b36a",
+    "#b2bbc7",
+    "#9b8cff",
+    "#ff8a9c"
+  ]
+}

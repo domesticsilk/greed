@@ -101,6 +101,13 @@ static bool sha_valid(const char *s) {
     return true;
 }
 
+/* Wallpapers land next to the theme JSON, so the name must stay in that folder. */
+static bool asset_name_valid(const char *s) {
+    if (!s || !s[0] || strlen(s) >= 128) return false;
+    if (strchr(s, '/') || strchr(s, '\\')) return false;
+    return strcmp(s, ".") && strcmp(s, "..");
+}
+
 static void mkdir_p(const char *path) {
     char tmp[PATH_MAX];
     size_t n = strlen(path);
@@ -199,6 +206,8 @@ static void installed_load(Market *m) {
             snprintf(r->id, sizeof r->id, "%s", id);
             snprintf(r->version, sizeof r->version, "%s", jstr(e, "version") ?: "");
             snprintf(r->path, sizeof r->path, "%s", path);
+            const char *extra = jstr(e, "extra");
+            if (extra) snprintf(r->extra, sizeof r->extra, "%s", extra);
         }
     }
     json_object_put(root);
@@ -212,6 +221,8 @@ static void installed_save(Market *m) {
         json_object_object_add(e, "id", json_object_new_string(m->installed[i].id));
         json_object_object_add(e, "version", json_object_new_string(m->installed[i].version));
         json_object_object_add(e, "path", json_object_new_string(m->installed[i].path));
+        if (m->installed[i].extra[0])
+            json_object_object_add(e, "extra", json_object_new_string(m->installed[i].extra));
         json_object_array_add(items, e);
     }
     json_object_object_add(root, "items", items);
@@ -294,6 +305,17 @@ static bool catalog_parse(const char *text, MarketItem **out, int *count) {
             it->preview_surface = hex_color(jstr(preview, "surface"), 0);
             it->preview_accent = hex_color(jstr(preview, "accent"), 0);
             it->preview_text = hex_color(jstr(preview, "text"), 0);
+        }
+        struct json_object *wallpaper = NULL;
+        if (json_object_object_get_ex(e, "wallpaper", &wallpaper)) {
+            const char *wurl = jstr(wallpaper, "url");
+            const char *wsha = jstr(wallpaper, "sha256");
+            const char *wname = jstr(wallpaper, "name");
+            if (wurl && wurl[0] && sha_valid(wsha) && asset_name_valid(wname)) {
+                snprintf(it->wallpaper_url, sizeof it->wallpaper_url, "%s", wurl);
+                snprintf(it->wallpaper_sha256, sizeof it->wallpaper_sha256, "%s", wsha);
+                snprintf(it->wallpaper_name, sizeof it->wallpaper_name, "%s", wname);
+            }
         }
         n++;
     }
@@ -542,7 +564,8 @@ static void job_error(Market *m, const char *msg) {
     pthread_mutex_unlock(&m->lock);
 }
 
-static void job_installed(Market *m, const MarketItem *it, const char *target) {
+static void job_installed(Market *m, const MarketItem *it, const char *target,
+                          const char *extra) {
     pthread_mutex_lock(&m->lock);
     int slot = -1;
     for (int i = 0; i < m->installed_count; i++)
@@ -557,6 +580,8 @@ static void job_installed(Market *m, const MarketItem *it, const char *target) {
         snprintf(m->installed[slot].version, sizeof m->installed[slot].version, "%s",
                  it->version);
         snprintf(m->installed[slot].path, sizeof m->installed[slot].path, "%s", target);
+        snprintf(m->installed[slot].extra, sizeof m->installed[slot].extra, "%s",
+                 extra ? extra : "");
         installed_save(m);
     }
     m->job_stage = MKT_JOB_INSTALLED;
@@ -565,33 +590,20 @@ static void job_installed(Market *m, const MarketItem *it, const char *target) {
     pthread_mutex_unlock(&m->lock);
 }
 
-static void *install_worker(void *arg) {
-    Market *m = arg;
-    MarketItem it;
-    pthread_mutex_lock(&m->lock);
-    it = m->items[m->job_item];
-    pthread_mutex_unlock(&m->lock);
-
-    char target[PATH_MAX], dir[PATH_MAX], tmp[PATH_MAX];
-    item_target(&it, target, sizeof target);
-    snprintf(dir, sizeof dir, "%s", target);
-    char *slash = strrchr(dir, '/');
-    if (slash) *slash = 0;
-    else snprintf(dir, sizeof dir, ".");
-    mkdir_p(dir);
-    snprintf(tmp, sizeof tmp, "%s/.greed-market-XXXXXX", dir);
-
+/* Download to a temporary file and check the published hash. */
+static bool fetch_verified(Market *m, const char *url, const char *sha, char *tmp,
+                           const char *what, char *err, size_t errcap) {
     int fd = mkstemp(tmp);
     if (fd < 0) {
-        job_error(m, "Could not write the download. Check your disk space.");
-        return NULL;
+        snprintf(err, errcap, "Could not write the %s. Check your disk space.", what);
+        return false;
     }
     FILE *f = fdopen(fd, "wb");
     if (!f) {
         close(fd);
         unlink(tmp);
-        job_error(m, "Could not write the download. Check your disk space.");
-        return NULL;
+        snprintf(err, errcap, "Could not write the %s. Check your disk space.", what);
+        return false;
     }
 
     pthread_once(&curl_once, curl_setup);
@@ -599,7 +611,7 @@ static void *install_worker(void *arg) {
     CURLcode rc = CURLE_FAILED_INIT;
     long code = 0;
     if (c) {
-        curl_easy_setopt(c, CURLOPT_URL, it.url);
+        curl_easy_setopt(c, CURLOPT_URL, url);
         curl_easy_setopt(c, CURLOPT_USERAGENT, "greed/" GREED_VERSION);
         curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);
@@ -620,35 +632,80 @@ static void *install_worker(void *arg) {
     if (rc != CURLE_OK) {
         unlink(tmp);
         if (rc == CURLE_HTTP_RETURNED_ERROR)
-            job_error(m, "The download was refused by the server.");
+            snprintf(err, errcap, "The %s download was refused by the server.", what);
         else if (rc == CURLE_OPERATION_TIMEDOUT || rc == CURLE_COULDNT_CONNECT)
-            job_error(m, net_error(rc));
+            snprintf(err, errcap, "%s", net_error(rc));
         else
-            job_error(m, "The download failed. Try again.");
-        return NULL;
+            snprintf(err, errcap, "The %s download failed. Try again.", what);
+        return false;
     }
 
     char hex[65];
     if (!checksum_hash_file(tmp, hex, sizeof hex)) {
         unlink(tmp);
-        job_error(m, "Could not verify the download.");
+        snprintf(err, errcap, "Could not verify the %s download.", what);
+        return false;
+    }
+    if (strcasecmp(hex, sha)) {
+        unlink(tmp);
+        snprintf(err, errcap, "The %s download did not match its checksum.", what);
+        return false;
+    }
+    return true;
+}
+
+static void *install_worker(void *arg) {
+    Market *m = arg;
+    MarketItem it;
+    pthread_mutex_lock(&m->lock);
+    it = m->items[m->job_item];
+    pthread_mutex_unlock(&m->lock);
+
+    char target[PATH_MAX], dir[PATH_MAX], tmp[PATH_MAX];
+    item_target(&it, target, sizeof target);
+    snprintf(dir, sizeof dir, "%s", target);
+    char *slash = strrchr(dir, '/');
+    if (slash) *slash = 0;
+    else snprintf(dir, sizeof dir, ".");
+    mkdir_p(dir);
+    snprintf(tmp, sizeof tmp, "%s/.greed-market-XXXXXX", dir);
+
+    char err[512];
+    if (!fetch_verified(m, it.url, it.sha256, tmp,
+                        it.kind == MKT_THEME ? "theme" : "tool", err, sizeof err)) {
+        job_error(m, err);
         return NULL;
     }
-    if (strcasecmp(hex, it.sha256)) {
-        unlink(tmp);
-        job_error(m, "The download did not match its checksum.");
-        return NULL;
+
+    char wp_tmp[PATH_MAX] = "", wp_target[PATH_MAX] = "";
+    if (it.kind == MKT_THEME && it.wallpaper_url[0]) {
+        snprintf(wp_target, sizeof wp_target, "%s/%s", dir, it.wallpaper_name);
+        snprintf(wp_tmp, sizeof wp_tmp, "%s/.greed-wallpaper-XXXXXX", dir);
+        if (!fetch_verified(m, it.wallpaper_url, it.wallpaper_sha256, wp_tmp, "wallpaper",
+                            err, sizeof err)) {
+            unlink(tmp);
+            job_error(m, err);
+            return NULL;
+        }
     }
 
     if (it.kind == MKT_THEME) {
         if (rename(tmp, target) != 0) {
             unlink(tmp);
+            if (wp_tmp[0]) unlink(wp_tmp);
             job_error(m, "Could not install the theme.");
+            return NULL;
+        }
+        if (wp_tmp[0] && rename(wp_tmp, wp_target) != 0) {
+            unlink(wp_tmp);
+            unlink(target);
+            job_error(m, "Could not install the wallpaper.");
             return NULL;
         }
         greed_theme_reload();
         if (!greed_theme_exists(it.name)) {
             unlink(target);
+            if (wp_target[0]) unlink(wp_target);
             greed_theme_reload();
             job_error(m, "The theme file is not valid.");
             return NULL;
@@ -660,7 +717,7 @@ static void *install_worker(void *arg) {
             return NULL;
         }
     }
-    job_installed(m, &it, target);
+    job_installed(m, &it, target, wp_target[0] ? wp_target : NULL);
     return NULL;
 }
 
@@ -703,8 +760,9 @@ bool market_remove(Market *m, int index) {
         pthread_mutex_unlock(&m->lock);
         return false;
     }
-    char path[PATH_MAX];
+    char path[PATH_MAX], extra[PATH_MAX];
     snprintf(path, sizeof path, "%s", m->installed[slot].path);
+    snprintf(extra, sizeof extra, "%s", m->installed[slot].extra);
     memmove(&m->installed[slot], &m->installed[slot + 1],
             (size_t)(m->installed_count - slot - 1) * sizeof m->installed[0]);
     m->installed_count--;
@@ -721,6 +779,7 @@ bool market_remove(Market *m, int index) {
     pthread_mutex_unlock(&m->lock);
 
     unlink(path);
+    if (extra[0]) unlink(extra);
     if (it.kind != MKT_THEME) {
         char dir[PATH_MAX];
         snprintf(dir, sizeof dir, "%s", path);

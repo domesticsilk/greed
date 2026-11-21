@@ -58,6 +58,40 @@ int main(void) {
                   color_contrast(disabled(c[CUI_TOKEN_TEXT_MUTED], surfaces[s]), surfaces[s]),
                   3.0f);
         }
+        if (t->wallpaper && t->wallpaper[0]) {
+            /* The artwork is unknown, so use pure white behind a dark scrim and
+             * pure black behind a light one: the worst case for contrast. */
+            cui_color extreme = t->dark ? CUI_RGB(0xffffff) : CUI_RGB(0x000000);
+            cui_color scrim = mix_srgb(base[0], extreme, 1 - t->wallpaper_scrim);
+            cui_color behind[17];
+            behind[0] = scrim;
+            for (int s = 0; s < n; s++)
+                behind[s + 1] = mix_srgb(scrim, surfaces[s], t->surface_alpha);
+            int bn = n + 1;
+            check(t->name, "wallpaper foreground",
+                  min_on(c[CUI_TOKEN_FOREGROUND], behind, bn), 4.5f);
+            check(t->name, "wallpaper text secondary",
+                  min_on(c[CUI_TOKEN_TEXT_SECONDARY], behind, bn), 4.5f);
+            check(t->name, "wallpaper text muted",
+                  min_on(c[CUI_TOKEN_TEXT_MUTED], behind, bn), 4.5f);
+            check(t->name, "wallpaper accent strong",
+                  min_on(c[CUI_TOKEN_ACCENT_STRONG], behind, bn), 4.5f);
+            check(t->name, "wallpaper danger", min_on(c[CUI_TOKEN_DANGER], behind, bn), 4.5f);
+            check(t->name, "wallpaper success", min_on(c[CUI_TOKEN_SUCCESS], behind, bn), 4.5f);
+            check(t->name, "wallpaper warning", min_on(c[CUI_TOKEN_WARNING], behind, bn), 4.5f);
+            check(t->name, "wallpaper focus ring", min_on(c[CUI_TOKEN_FOCUS_RING], behind, bn), 3.0f);
+            for (int s = 0; s < bn; s++) {
+                check(t->name, "wallpaper disabled foreground",
+                      color_contrast(disabled(c[CUI_TOKEN_FOREGROUND], behind[s]), behind[s]),
+                      3.0f);
+                check(t->name, "wallpaper disabled secondary",
+                      color_contrast(disabled(c[CUI_TOKEN_TEXT_SECONDARY], behind[s]), behind[s]),
+                      3.0f);
+                check(t->name, "wallpaper disabled muted",
+                      color_contrast(disabled(c[CUI_TOKEN_TEXT_MUTED], behind[s]), behind[s]),
+                      3.0f);
+            }
+        }
     }
     if (!greed_theme_exists("Liquid Glass") || !greed_theme_exists("Liquid Glass Dark")) {
         printf("FAIL Liquid Glass themes not found under %s/themes\n", GREED_MARKETPLACE_DIR);

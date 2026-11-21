@@ -27,6 +27,10 @@ typedef struct {
     char requires[128];
     long long size;
     int kind;
+    /* Optional wallpaper shipped with a theme, installed next to its JSON. */
+    char wallpaper_url[2048];
+    char wallpaper_sha256[65];
+    char wallpaper_name[128];
     unsigned preview_bg, preview_surface, preview_accent, preview_text;
 } MarketItem;
 
@@ -34,6 +38,7 @@ typedef struct {
     char id[64];
     char version[64];
     char path[PATH_MAX];
+    char extra[PATH_MAX]; /* wallpaper installed with a theme, or empty */
 } MarketInstalled;
 
 typedef struct {

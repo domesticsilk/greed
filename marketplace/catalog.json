@@ -173,6 +173,60 @@
       }
     },
     {
+      "id": "ado",
+      "type": "theme",
+      "name": "Ado",
+      "category": "Theme",
+      "version": "1.0.0",
+      "summary": "A dark stage lit by crimson beams, with an electric blue edge.",
+      "description": "A dark theatre stage: crimson beams over near black, an electric blue rim and a soft spotlight. Ships with an original abstract wallpaper and translucent panels, so the art stays visible behind the interface. Installs as a theme you can apply from the marketplace.",
+      "source": "greed theme pack",
+      "asset": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/ado.json",
+        "sha256": "c8e160e21e1863e460491ad4453fc396259b9b4672bf0d9bd6edcd54a6ffd8bf",
+        "size": 545
+      },
+      "wallpaper": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/ado.jpg",
+        "sha256": "43d35510a0245cb461f607b8b465608fd08671d78cb140024ed1eba887531faf",
+        "name": "ado.jpg",
+        "size": 418564
+      },
+      "preview": {
+        "bg": "#05071a",
+        "surface": "#0b1029",
+        "accent": "#5574ff",
+        "text": "#e9edf7"
+      }
+    },
+    {
+      "id": "echidna",
+      "type": "theme",
+      "name": "Echidna",
+      "category": "Theme",
+      "version": "1.0.0",
+      "summary": "Warm parchment, deep violet ink and a trace of muted gold.",
+      "description": "A light theme on warm ivory parchment: deep violet ink, muted gold rings and soft botanical stains. Ships with an original abstract wallpaper and translucent panels, so the paper texture stays visible behind the interface. Installs as a theme you can apply from the marketplace.",
+      "source": "greed theme pack",
+      "asset": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/echidna.json",
+        "sha256": "dfa7b32266c657beba114ba6b1840185e421dce6f3c4d5ffb4c64e6ffa7d576e",
+        "size": 554
+      },
+      "wallpaper": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/echidna.jpg",
+        "sha256": "10bd0761c3b6aa585eecd368818b0966b49d994cc0dbf2b9fcf0fd8c3238336e",
+        "name": "echidna.jpg",
+        "size": 47647
+      },
+      "preview": {
+        "bg": "#f6f0e3",
+        "surface": "#fffcf3",
+        "accent": "#5b3a8c",
+        "text": "#201a26"
+      }
+    },
+    {
       "id": "liquid-glass",
       "type": "theme",
       "name": "Liquid Glass",
