@@ -70,6 +70,8 @@ runtime in between.
 - Optional Liquid Glass theme with light and dark variants, a unified toolbar, traffic lights and
   optical glass on the toolbar, sidebar and dialogs
 - Sidebar tabs for All, Active, Waiting, Stopped and Complete
+- Automatic file-type categories (Video, Audio, Images, Documents, Archives, Programs, Other)
+  that appear once they have downloads and filter the list when clicked
 - Resizable sidebar from 140 to 420 px, with live transfer speeds in the status bar
 - Searchable download table with Name, Size, Progress, Speed, ETA, Added, Location, Connections
   and Status; every column except Name can be hidden

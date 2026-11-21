@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 static const char *jstr(struct json_object *v, const char *key) {
     struct json_object *o;
@@ -108,6 +109,37 @@ const char *download_status_label(const Download *d) {
 bool download_is_finished(const Download *d) {
     return !strcmp(d->status, "complete") || !strcmp(d->status, "error") ||
            !strcmp(d->status, "removed");
+}
+
+static bool has_extension(const char *name, const char *const *exts) {
+    const char *dot = strrchr(name, '.');
+    if (!dot || !dot[1]) return false;
+    for (int i = 0; exts[i]; i++)
+        if (!strcasecmp(dot + 1, exts[i])) return true;
+    return false;
+}
+
+int download_category(const Download *d) {
+    static const char *video[] = {"mp4", "mkv", "webm", "avi", "mov", "m4v", "ts", "flv",
+                                  "wmv", "mpg", "mpeg", NULL};
+    static const char *audio[] = {"mp3", "flac", "m4a", "opus", "ogg", "wav", "aac", "wma",
+                                  "aiff", "alac", NULL};
+    static const char *images[] = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "heic",
+                                   "avif", "tif", "tiff", "ico", NULL};
+    static const char *documents[] = {"pdf", "epub", "mobi", "doc", "docx", "odt", "txt", "rtf",
+                                      "xls", "xlsx", "ods", "ppt", "pptx", "odp", "csv", "md",
+                                      NULL};
+    static const char *archives[] = {"zip", "tar", "gz", "xz", "7z", "rar", "bz2", "zst", "iso",
+                                     "img", "tgz", "tbz", "txz", NULL};
+    static const char *programs[] = {"appimage", "deb", "rpm", "apk", "exe", "msi", "run",
+                                     "flatpak", "snap", "sh", NULL};
+    if (has_extension(d->name, video)) return CAT_VIDEO;
+    if (has_extension(d->name, audio)) return CAT_AUDIO;
+    if (has_extension(d->name, images)) return CAT_IMAGES;
+    if (has_extension(d->name, documents)) return CAT_DOCUMENTS;
+    if (has_extension(d->name, archives)) return CAT_ARCHIVES;
+    if (has_extension(d->name, programs)) return CAT_PROGRAMS;
+    return CAT_OTHER;
 }
 
 void fmt_speed(char *out, size_t cap, unsigned long long bps) {

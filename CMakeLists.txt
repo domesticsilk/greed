@@ -86,4 +86,9 @@ target_include_directories(greed-history-check PRIVATE src ${JSONC_INCLUDE_DIRS}
 target_link_libraries(greed-history-check PRIVATE ${JSONC_LIBRARIES})
 add_test(NAME history COMMAND greed-history-check)
 
+add_executable(greed-model-check tests/model.c src/model.c)
+target_include_directories(greed-model-check PRIVATE src ${JSONC_INCLUDE_DIRS})
+target_link_libraries(greed-model-check PRIVATE ${JSONC_LIBRARIES})
+add_test(NAME model COMMAND greed-model-check)
+
 install(TARGETS greed RUNTIME DESTINATION bin)

@@ -66,6 +66,7 @@ typedef struct {
     bool connected;
     bool engine_applied;
     int tab;
+    int category;
     int view;
     GreedScheduled sched[GREED_MAX_SCHEDULED];
     int sched_count;
@@ -183,6 +184,11 @@ static void request_remove(App *a);
 static const char *tab_names[TAB_COUNT] = {"All", "Active", "Waiting", "Stopped", "Complete"};
 static const char *tab_icons[TAB_COUNT] = {CUI_ICON_LAYERS, CUI_ICON_ACTIVITY, CUI_ICON_CLOCK,
                                            CUI_ICON_CIRCLE_ALERT, CUI_ICON_CIRCLE_CHECK};
+static const char *cat_names[CAT_COUNT] = {NULL, "Video", "Audio", "Images", "Documents",
+                                           "Archives", "Programs", "Other"};
+static const char *cat_icons[CAT_COUNT] = {NULL, CUI_ICON_VIDEO, CUI_ICON_MUSIC, CUI_ICON_IMAGE,
+                                           CUI_ICON_FILE_TEXT, CUI_ICON_ARCHIVE, CUI_ICON_PACKAGE,
+                                           CUI_ICON_FILE};
 
 typedef struct {
     const char *title;
@@ -1331,7 +1337,11 @@ static int collect_rows(App *a, int *rows, int cap) {
     int n = 0;
     for (int i = 0; i < a->count; i++) {
         const Download *d = &a->items[i];
-        if (!tab_matches(a->tab, d)) continue;
+        if (a->category) {
+            if (download_category(d) != a->category) continue;
+        } else if (!tab_matches(a->tab, d)) {
+            continue;
+        }
         if (!contains_ci(d->name, a->filter) && !contains_ci(d->url, a->filter)) continue;
         if (rows) {
             if (n >= cap) break;
@@ -1512,6 +1522,9 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
     for (int i = 0; i < a->count; i++)
         for (int t = 0; t < TAB_COUNT; t++)
             if (tab_matches(t, &a->items[i])) counts[t]++;
+    int cats[CAT_COUNT] = {0};
+    for (int i = 0; i < a->count; i++) cats[download_category(&a->items[i])]++;
+    if (a->category && !cats[a->category]) a->category = CAT_NONE;
     bool mac = mac_chrome(a);
     bool glass = mac_glass(a);
     GlassPaint g = glass_fill(a, ui);
@@ -1534,9 +1547,11 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
                     if (counts[t] > 0) snprintf(badge, sizeof badge, "%d", counts[t]);
                     if (cui_nav_item(ui, tab_names[t], .icon = tab_icons[t],
                                      .badge = badge[0] ? badge : NULL,
-                                     .selected = a->view == VIEW_DOWNLOADS && a->tab == t,
+                                     .selected = a->view == VIEW_DOWNLOADS && a->tab == t &&
+                                                 !a->category,
                                      .group = "tabs")) {
                         a->tab = t;
+                        a->category = CAT_NONE;
                         a->view = VIEW_DOWNLOADS;
                     }
                 }
@@ -1546,6 +1561,26 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
                                  .badge = sched_badge[0] ? sched_badge : NULL,
                                  .selected = a->view == VIEW_SCHEDULED, .group = "tabs"))
                     a->view = VIEW_SCHEDULED;
+                bool any_category = false;
+                for (int c = CAT_VIDEO; c < CAT_COUNT; c++)
+                    if (cats[c]) any_category = true;
+                if (any_category) {
+                    cui_box(ui, .height = CUI_PX(14)) {}
+                    cui_separator(ui);
+                    cui_nav_section(ui, mac ? "Categories" : "CATEGORIES");
+                    for (int c = CAT_VIDEO; c < CAT_COUNT; c++) {
+                        if (!cats[c]) continue;
+                        char badge[16];
+                        snprintf(badge, sizeof badge, "%d", cats[c]);
+                        if (cui_nav_item(ui, cat_names[c], .icon = cat_icons[c], .badge = badge,
+                                         .selected = a->view == VIEW_DOWNLOADS &&
+                                                     a->category == c,
+                                         .group = "tabs")) {
+                            a->category = c;
+                            a->view = VIEW_DOWNLOADS;
+                        }
+                    }
+                }
                 cui_box(ui, .height = CUI_PX(14)) {}
                 cui_separator(ui);
                 cui_nav_section(ui, mac ? "Insights" : "INSIGHTS");
@@ -3701,7 +3736,7 @@ static void run_command(App *a, int cmd) {
         break;
     case CMD_SELECT_ALL: select_all(a); break;
     case CMD_CLEAR: selection_clear(a); a->details_open = false; break;
-    case CMD_DOWNLOADS: a->view = VIEW_DOWNLOADS; break;
+    case CMD_DOWNLOADS: a->category = CAT_NONE; a->view = VIEW_DOWNLOADS; break;
     case CMD_STATS: a->view = VIEW_STATS; break;
     case CMD_SCHEDULED: a->view = VIEW_SCHEDULED; break;
     case CMD_SIDEBAR: a->sidebar_open = !a->sidebar_open; break;
@@ -3795,10 +3830,12 @@ static void list_keys(App *a, cui_ctx *ui, bool vim) {
     if (!vim) return;
     if (plain_key(ui, CUI_KEY_H)) {
         a->tab = (a->tab + TAB_COUNT - 1) % TAB_COUNT;
+        a->category = CAT_NONE;
         a->view = VIEW_DOWNLOADS;
     }
     if (plain_key(ui, CUI_KEY_L)) {
         a->tab = (a->tab + 1) % TAB_COUNT;
+        a->category = CAT_NONE;
         a->view = VIEW_DOWNLOADS;
     }
     double now = cui_time(ui);
@@ -3867,6 +3904,7 @@ static void handle_keys(App *a, cui_ctx *ui) {
     }
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_1)) {
         a->tab = TAB_ALL;
+        a->category = CAT_NONE;
         a->view = VIEW_DOWNLOADS;
     }
     if (cui_shortcut(ui, CUI_MOD_PRIMARY, CUI_KEY_2)) a->view = VIEW_STATS;

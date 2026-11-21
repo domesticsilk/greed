@@ -32,11 +32,15 @@ typedef struct {
     unsigned long long stopped;
 } GlobalStat;
 
+enum { CAT_NONE = 0, CAT_VIDEO, CAT_AUDIO, CAT_IMAGES, CAT_DOCUMENTS, CAT_ARCHIVES,
+       CAT_PROGRAMS, CAT_OTHER, CAT_COUNT };
+
 bool download_parse(struct json_object *v, Download *d);
 double download_progress(const Download *d);
 bool download_eta(const Download *d, unsigned long long *secs);
 const char *download_status_label(const Download *d);
 bool download_is_finished(const Download *d);
+int download_category(const Download *d);
 
 void fmt_speed(char *out, size_t cap, unsigned long long bps);
 void fmt_bytes(char *out, size_t cap, unsigned long long bytes);
