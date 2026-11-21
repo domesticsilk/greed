@@ -1373,8 +1373,8 @@ static void wordmark(App *a, cui_ctx *ui, float size) {
     if (!active_cfg(a)->logo_app_font) {
         cui_texture logo = logo_texture(ui);
         if (logo) {
-            cui_image(ui, logo, .width = CUI_PX(GREED_LOGO_W / 2),
-                      .height = CUI_PX(GREED_LOGO_H / 2), .tint = CUI_COLOR_FOREGROUND);
+            cui_image(ui, logo, .width = CUI_PX(GREED_LOGO_W * 0.42f),
+                      .height = CUI_PX(GREED_LOGO_H * 0.42f), .tint = CUI_COLOR_FOREGROUND);
             return;
         }
     }
