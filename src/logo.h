@@ -1,8 +1,8 @@
 /* Greed titlebar wordmark, rendered from the Stitch Warrior demo font.
  * Only the rendered alpha mask ships; the font file itself is not included.
  * Generated asset, 2x resolution: draw at 75x24 points. */
-#ifndef GREED_LOGO_H
-#define GREED_LOGO_H
+#ifndef GREED_LOGO_H_INCLUDED
+#define GREED_LOGO_H_INCLUDED
 
 #define GREED_LOGO_W 151
 #define GREED_LOGO_H 48

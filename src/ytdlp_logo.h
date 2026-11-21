@@ -1,8 +1,8 @@
 /* yt-dlp marketplace logo, 64x64 RGBA.
  * Source: user-supplied yt-dlp-logo.webp, resized for the 54pt card tile.
  * Generated asset; the webp is not shipped. */
-#ifndef GREED_YTDLP_LOGO_H
-#define GREED_YTDLP_LOGO_H
+#ifndef GREED_YTDLP_LOGO_H_INCLUDED
+#define GREED_YTDLP_LOGO_H_INCLUDED
 
 #define GREED_YTDLP_LOGO_W 64
 #define GREED_YTDLP_LOGO_H 64

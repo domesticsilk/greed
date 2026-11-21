@@ -26,7 +26,7 @@ runtime in between.
 
 <p align="center">
   <img src="assets/screenshot-statistics.png" width="49%" alt="Statistics view with the throughput chart and download folder">
-  <img src="assets/screenshot-marketplace.png" width="49%" alt="Marketplace with engines, tools and themes">
+  <img src="assets/screenshot-marketplace.png" width="49%" alt="Marketplace with All, Engines and Themes tabs">
 </p>
 
 *The Statistics view tracks throughput, transfer limits and free space. The Marketplace screenshot uses the optional Liquid Glass theme.*

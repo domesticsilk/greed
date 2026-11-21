@@ -12,6 +12,7 @@
 #include "update.h"
 #include "version.h"
 #include "ytdlp.h"
+#include "ffmpeg_logo.h"
 #include "ytdlp_logo.h"
 #include "x11.h"
 
@@ -3046,10 +3047,17 @@ static cui_texture ytdlp_logo_texture(cui_ctx *ui) {
     return tex;
 }
 
+static cui_texture ffmpeg_logo_texture(cui_ctx *ui) {
+    static cui_texture tex;
+    if (!tex)
+        tex = cui_image_create(ui, GREED_FFMPEG_LOGO_W, GREED_FFMPEG_LOGO_H,
+                               greed_ffmpeg_logo_rgba);
+    return tex;
+}
+
 static bool market_matches(const MarketItem *it, const char *query, int cat) {
     if (cat == 1 && it->kind != MKT_ENGINE) return false;
-    if (cat == 2 && it->kind != MKT_TOOL) return false;
-    if (cat == 3 && it->kind != MKT_THEME) return false;
+    if (cat == 2 && it->kind != MKT_THEME) return false;
     if (!query[0]) return true;
     return contains_ci(it->name, query) || contains_ci(it->summary, query) ||
            contains_ci(it->category, query) || contains_ci(it->id, query);
@@ -3066,6 +3074,7 @@ static void market_card(App *a, cui_ctx *ui, const MarketItem *it, int index, bo
     bool failed = a->mkt.job_item == index && a->mkt.job_stage == MKT_JOB_ERROR;
     /* The yt-dlp mark is red, so its tile ring follows the logo, not the catalog preview. */
     bool ytdlp = !strcmp(it->id, "yt-dlp");
+    bool ffmpeg = !strcmp(it->id, "ffmpeg");
     unsigned accent = ytdlp ? 0xff0700 : it->preview_accent;
     char size[32] = {0};
     if (it->size > 0) fmt_bytes(size, sizeof size, (unsigned long long)it->size);
@@ -3081,7 +3090,8 @@ static void market_card(App *a, cui_ctx *ui, const MarketItem *it, int index, bo
                                            : cui_color_of(ui, CUI_COLOR_BORDER)) {
                 cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_CENTER,
                         .justify = CUI_JUSTIFY_CENTER) {
-                    cui_texture logo = ytdlp ? ytdlp_logo_texture(ui) : 0;
+                    cui_texture logo = ytdlp ? ytdlp_logo_texture(ui)
+                                       : ffmpeg ? ffmpeg_logo_texture(ui) : 0;
                     if (logo) {
                         float side = featured ? 54 : 38;
                         cui_image(ui, logo, .width = CUI_PX(side), .height = CUI_PX(side),
@@ -3184,25 +3194,14 @@ static void market_dialog(App *a, cui_ctx *ui) {
                                 .tooltip = "Refresh catalog",
                                 .disabled = v->job_stage == MKT_JOB_DOWNLOADING))
                 market_fetch(&a->market, true);
-        }
-
-        bool tools_present = false;
-        for (int i = 0; i < v->count; i++)
-            if (v->items[i].kind == MKT_TOOL) tools_present = true;
-        if (a->market_cat == 2 && !tools_present) a->market_cat = 0;
-
-        static const char *cats[] = {"All", "Engines", "Tools", "Themes"};
-        cui_row(ui, .width = CUI_FILL, .gap = 6, .wrap = true, .align = CUI_ALIGN_CENTER) {
-            for (int i = 0; i < 4; i++) {
-                if (i == 2 && !tools_present) continue;
-                bool on = a->market_cat == i;
-                if (cui_chip(ui, cats[i], &on)) a->market_cat = i;
-            }
-            cui_spacer(ui);
             char installed[32];
             snprintf(installed, sizeof installed, "%d installed", v->installed_count);
             cui_text(ui, installed, .size = 11, .color = CUI_COLOR_TEXT_MUTED);
         }
+
+        static const char *tabs[] = {"All", "Engines", "Themes"};
+        static const char *icons[] = {CUI_ICON_GRID_3X3, CUI_ICON_ZAP, CUI_ICON_PALETTE};
+        cui_tabs(ui, "market-tabs", tabs, 3, &a->market_cat, .icons = icons);
 
         if (v->note[0]) cui_muted(ui, v->note);
 
