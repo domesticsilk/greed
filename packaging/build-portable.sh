@@ -74,7 +74,7 @@ if [ ! -f /.deps ]; then
     apt-get -o APT::Sandbox::User=root update -qq
     apt-get -o APT::Sandbox::User=root install -y -qq --no-install-recommends \
         build-essential cmake pkg-config libcurl4-openssl-dev libjson-c-dev \
-        libx11-dev libxext-dev aria2 libaria2-0 ca-certificates file
+        libx11-dev libxext-dev aria2 libaria2-0 ca-certificates curl file
     touch /.deps
 fi
 cmake -S /src -B /out/build -DCMAKE_BUILD_TYPE=Release
