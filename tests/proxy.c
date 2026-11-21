@@ -59,7 +59,7 @@ int main(void) {
     c.proxy[0] = 0;
     check(!config_proxy_error(c.proxy), "empty proxy is valid");
 
-    char tmpl[] = "/tmp/opencode/greed-proxy-XXXXXX";
+    char tmpl[] = "/tmp/greed-proxy-XXXXXX";
     char *dir = mkdtemp(tmpl);
     check(dir != NULL, "temp config dir");
     if (dir) {

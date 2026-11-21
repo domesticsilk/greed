@@ -2,14 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include "../src/history.h"
 
 int main(void) {
-    mkdir("/tmp/opencode", 0755);
-    char tmpl[] = "/tmp/opencode/greed-history-XXXXXX";
+    char tmpl[] = "/tmp/greed-history-XXXXXX";
     char *dir = mkdtemp(tmpl);
     assert(dir);
     assert(setenv("XDG_CONFIG_HOME", dir, 1) == 0);
