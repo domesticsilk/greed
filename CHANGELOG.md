@@ -30,8 +30,9 @@ First public release.
 - 76 built-in themes with Dark Mono as the default, plus an optional Liquid Glass theme
 - Sidebar tabs and automatic file-type categories that appear once they have downloads
 - Sortable table with hidden-column controls, drag resizing and an Added column
-- Details pane on the right for a single selection; selecting two or more downloads opens a
-  bottom panel of side-by-side cards with pause, resume, remove and per-card deselect
+- Details pane on the right for a single selection; selecting two or more downloads with a drag
+  band, `Ctrl+click` or `Shift+Up/Down` opens a bottom panel of side-by-side cards with pause,
+  resume, remove and per-card deselect
 - Animations can be turned off in Settings, which also disables the animation speed control
 - Command palette, Vim mode and a workflow that works without a mouse
 - WCAG AA text contrast on every theme surface and visible keyboard focus

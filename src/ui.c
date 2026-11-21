@@ -84,6 +84,7 @@ typedef struct {
     /* Multi-selection: every action button works on the whole set. */
     char sel[256][32];
     int sel_count;
+    int sel_anchor;            /* Shift+Up/Down extends from this row */
     /* Snapshot for the selection panel while it slides shut. */
     char panel_gid[256][32];
     int panel_count;
@@ -179,6 +180,7 @@ typedef struct {
     bool frame_ready;
     bool demo_details;
     bool demo_selection;
+    bool demo_range;
     bool demo_settings_scroll;
     float hist_down[HIST];
     float hist_up[HIST];
@@ -597,16 +599,19 @@ static void selection_remove(App *a, const char *gid) {
 
 static void selection_set(App *a, const char *gid) {
     a->sel_count = 0;
+    a->sel_anchor = -1;
     selection_add(a, gid);
     snprintf(a->selected, sizeof a->selected, "%s", gid);
 }
 
 static void selection_clear(App *a) {
     a->sel_count = 0;
+    a->sel_anchor = -1;
     a->selected[0] = 0;
 }
 
 static void selection_toggle(App *a, const char *gid) {
+    a->sel_anchor = -1;
     if (selection_has(a, gid)) {
         selection_remove(a, gid);
         return;
@@ -1782,8 +1787,7 @@ static void selection_panel(App *a, cui_ctx *ui) {
     float opacity = h / 148.0f;
     if (opacity > 1.0f) opacity = 1.0f;
     cui_column(ui, .width = CUI_FILL, .height = CUI_PX(h), .bg = CUI_COLOR_SURFACE_RAISED,
-               .border = 1, .border_color = CUI_COLOR_BORDER, .pad_x = 12, .pad_y = 8,
-               .gap = 8, .clip = true, .opacity = opacity) {
+               .pad_x = 12, .pad_y = 8, .gap = 8, .clip = true, .opacity = opacity) {
         cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER, .gap = 6) {
             char label[48];
             snprintf(label, sizeof label, "%d selected", a->panel_count);
@@ -1816,22 +1820,14 @@ static void selection_panel(App *a, cui_ctx *ui) {
                     cui_card(ui, .id = a->panel_gid[i], .width = CUI_PX(230),
                              .height = CUI_FILL, .pad = 10, .gap = 6, .hoverable = false) {
                         cui_row(ui, .width = CUI_FILL, .gap = 6, .align = CUI_ALIGN_CENTER) {
-                            cui_box(ui, .width = CUI_PX(8), .height = CUI_PX(8), .radius = 4,
-                                    .bg = status_color(d));
                             cui_text(ui, d->name, .size = 12, .font = CUI_FONT_MEDIUM,
                                      .width = CUI_FILL, .nowrap = true);
                             if (cui_icon_button(ui, CUI_ICON_X, .size = CUI_SIZE_SM,
                                                 .tooltip = "Deselect"))
                                 drop = a->panel_gid[i];
                         }
-                        cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
-                            cui_badge(ui, download_status_label(d), .tone = status_tone(d));
-                            cui_spacer(ui);
-                            char pct[16];
-                            snprintf(pct, sizeof pct, "%.0f%%", download_progress(d) * 100.0);
-                            cui_text(ui, pct, .size = 11, .color = CUI_COLOR_TEXT_MUTED,
-                                     .tabular = true);
-                        }
+                        cui_text(ui, download_status_label(d), .size = 11,
+                                 .color = status_color(d));
                         cui_progress(ui, (float)download_progress(d), .height = 4,
                                      .tone = status_tone(d));
                     }
@@ -2520,10 +2516,8 @@ static void content(App *a, cui_ctx *ui) {
             cui_search(ui, "filter", a->filter, sizeof a->filter, .placeholder = "Search downloads",
                        .width = CUI_FILL, .autofocus = false);
             char shown[48];
-            if (a->sel_count > 1) snprintf(shown, sizeof shown, "%d selected", a->sel_count);
-            else snprintf(shown, sizeof shown, "%d shown", collect_rows(a, NULL, 0));
-            cui_text(ui, shown, .size = 12,
-                     .color = a->sel_count > 1 ? CUI_COLOR_ACCENT : CUI_COLOR_TEXT_MUTED);
+            snprintf(shown, sizeof shown, "%d shown", collect_rows(a, NULL, 0));
+            cui_text(ui, shown, .size = 12, .color = CUI_COLOR_TEXT_MUTED);
             cui_menu(ui, "Columns", .icon = CUI_ICON_SLIDERS_HORIZONTAL, .icon_only = true) {
                 for (int c = 0; c < GREED_COL_COUNT; c++) {
                     bool on = (a->cfg.columns & GREED_COL_BIT(c)) != 0;
@@ -2551,10 +2545,7 @@ static void content(App *a, cui_ctx *ui) {
 
 static void statusbar(App *a, cui_ctx *ui) {
     char count[64];
-    if (a->sel_count > 1)
-        snprintf(count, sizeof count, "%d selected · %d downloads", a->sel_count, a->count);
-    else
-        snprintf(count, sizeof count, "%d downloads", a->count);
+    snprintf(count, sizeof count, "%d downloads", a->count);
     cui_status_bar(ui, "statusbar") {
         cui_status_bar_text(ui, a->status);
         cui_status_bar_spacer(ui);
@@ -3910,9 +3901,34 @@ static void cursor_to(App *a, cui_ctx *ui, int idx) {
     if (idx < 0) idx = 0;
     if (idx >= n) idx = n - 1;
     selection_set(a, a->items[rows[idx]].gid);
+    a->sel_anchor = idx;
     a->details_open = true;
     float row_h = active_cfg(a)->spacing < 0.96f ? 36.0f : 44.0f;
     cui_scroll_show(ui, "downloads", "#body", idx * (row_h + 1.0f), row_h);
+}
+
+/* Shift+Up/Down selects the range from the anchor row to the moved row. */
+static void cursor_extend(App *a, cui_ctx *ui, int delta) {
+    int n = 0;
+    int cur = cursor_index(a, &n);
+    if (!n) return;
+    if (cur < 0) cur = 0;
+    int to = cur + delta;
+    if (to < 0) to = 0;
+    if (to >= n) to = n - 1;
+    if (to == cur) return;
+    if (a->sel_anchor < 0 || a->sel_anchor >= n) a->sel_anchor = cur;
+    int lo = a->sel_anchor < to ? a->sel_anchor : to;
+    int hi = a->sel_anchor < to ? to : a->sel_anchor;
+    int rows[512];
+    int count = collect_rows(a, rows, 512);
+    if (hi >= count) hi = count - 1;
+    a->sel_count = 0;
+    for (int i = lo; i <= hi; i++) selection_add(a, a->items[rows[i]].gid);
+    snprintf(a->selected, sizeof a->selected, "%s", a->items[rows[to]].gid);
+    a->details_open = true;
+    float row_h = active_cfg(a)->spacing < 0.96f ? 36.0f : 44.0f;
+    cui_scroll_show(ui, "downloads", "#body", to * (row_h + 1.0f), row_h);
 }
 
 static void cursor_move(App *a, cui_ctx *ui, int delta) {
@@ -3935,7 +3951,11 @@ static void list_keys(App *a, cui_ctx *ui, bool vim) {
         return;
     }
     int base = cur < 0 ? 0 : cur;
-    if (cui_key_pressed(ui, CUI_KEY_DOWN) || (vim && plain_key(ui, CUI_KEY_J)))
+    if (cui_shortcut(ui, CUI_MOD_SHIFT, CUI_KEY_DOWN))
+        cursor_extend(a, ui, 1);
+    else if (cui_shortcut(ui, CUI_MOD_SHIFT, CUI_KEY_UP))
+        cursor_extend(a, ui, -1);
+    else if (cui_key_pressed(ui, CUI_KEY_DOWN) || (vim && plain_key(ui, CUI_KEY_J)))
         cursor_move(a, ui, 1);
     else if (cui_key_pressed(ui, CUI_KEY_UP) || (vim && plain_key(ui, CUI_KEY_K)))
         cursor_move(a, ui, -1);
@@ -4137,7 +4157,7 @@ static void frame(cui_ctx *ui, void *user) {
     }
     /* Screenshot/test hook: GREED_DEMO=details selects the first download. */
     if (a->demo_details && !a->selected[0] && a->count) {
-        snprintf(a->selected, sizeof a->selected, "%s", a->items[0].gid);
+        selection_set(a, a->items[0].gid);
         a->details_open = true;
     }
     if (a->demo_selection && a->count >= 3 && a->sel_count < 3) {
@@ -4145,6 +4165,11 @@ static void frame(cui_ctx *ui, void *user) {
         for (int i = 0; i < 3; i++) selection_add(a, a->items[i].gid);
         snprintf(a->selected, sizeof a->selected, "%s", a->items[0].gid);
         a->details_open = true;
+    }
+    if (a->demo_range && a->count >= 3 && a->sel_count < 3) {
+        cursor_to(a, ui, 0);
+        cursor_extend(a, ui, 1);
+        cursor_extend(a, ui, 1);
     }
     poll_clipboard(a, ui);
     cui_request_wakeup(ui, 0.8f);
@@ -4242,6 +4267,7 @@ int ui_run(const char *initial_links) {
     a->edit = cfg;
     a->clip_toast = -1;
     a->sidebar_open = true;
+    a->sel_anchor = -1;
     a->add_conn = cfg.max_concurrent;
     snprintf(a->add_dir, sizeof a->add_dir, "%s", cfg.download_dir);
     snprintf(a->status, sizeof a->status, "Ready");
@@ -4251,7 +4277,7 @@ int ui_run(const char *initial_links) {
     ytdlp_init(&a->ytdlp);
     a->sched_count = config_schedules_load(a->sched, GREED_MAX_SCHEDULED);
 
-    /* Test hook for screenshots: GREED_DEMO=add|add-headers|settings|settings-bandwidth|settings-torrents|settings-interface|details|selection|stats|empty */
+    /* Test hook for screenshots: GREED_DEMO=add|add-headers|settings|settings-bandwidth|settings-torrents|settings-interface|details|selection|range|stats|empty */
     const char *demo = getenv("GREED_DEMO");
     if (demo && !strcmp(demo, "add")) open_add(a);
     else if (demo && !strcmp(demo, "add-headers")) {
@@ -4282,6 +4308,7 @@ int ui_run(const char *initial_links) {
     else if (demo && !strcmp(demo, "market")) open_market(a);
     else if (demo && !strcmp(demo, "details")) a->demo_details = true;
     else if (demo && !strcmp(demo, "selection")) a->demo_selection = true;
+    else if (demo && !strcmp(demo, "range")) a->demo_range = true;
     else if (demo && !strcmp(demo, "settings-interface")) {
         a->show_settings = true;
         a->demo_settings_scroll = true;

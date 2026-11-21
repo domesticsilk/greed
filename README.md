@@ -95,9 +95,9 @@ runtime in between.
 
 - Row actions: open a finished file, open its folder, copy the source link or retry a failed
   download
-- Bulk selection by drag band or `Ctrl+click`: two or more downloads open a bottom panel of
-  side-by-side cards, then pause, resume, remove or deselect them one by one; a single selection
-  keeps the details pane on the right
+- Bulk selection by drag band, `Ctrl+click` or `Shift+Up/Down`: two or more downloads open a
+  bottom panel of side-by-side cards, then pause, resume, remove or deselect them one by one; a
+  single selection keeps the details pane on the right
 - Add dialog with a per-download directory, file name and connection count, plus a quality picker
   for video pages
 
