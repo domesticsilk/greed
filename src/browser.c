@@ -91,6 +91,18 @@ static void wrapper_path(char *out, size_t cap) {
     snprintf(out, cap, "%s/native-host", data_dir());
 }
 
+static void mkdir_parents(const char *path) {
+    char tmp[PATH_MAX];
+    if (snprintf(tmp, sizeof tmp, "%s", path) >= (int)sizeof tmp) return;
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = 0;
+        mkdir(tmp, 0755);
+        *p = '/';
+    }
+    mkdir(tmp, 0755);
+}
+
 /* Single-quote a path for the small wrapper script. */
 static void sh_quote(const char *in, char *out, size_t cap) {
     size_t o = 0;
@@ -134,7 +146,7 @@ static bool write_manifest(const char *dir) {
     char hosts[PATH_MAX], path[PATH_MAX];
     if (snprintf(hosts, sizeof hosts, "%s/NativeMessagingHosts", dir) >= (int)sizeof hosts)
         return false;
-    mkdir(hosts, 0755);
+    mkdir_parents(hosts);
     if (snprintf(path, sizeof path, "%s/%s.json", hosts, GREED_NATIVE_HOST) >=
         (int)sizeof path)
         return false;
@@ -165,7 +177,7 @@ int browser_install(void) {
         fprintf(stderr, "error: cannot find the config directory\n");
         return 1;
     }
-    mkdir(data_dir(), 0755);
+    mkdir_parents(data_dir());
     char wrapper[PATH_MAX];
     wrapper_path(wrapper, sizeof wrapper);
     if (!write_wrapper(wrapper)) {
