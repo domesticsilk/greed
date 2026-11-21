@@ -1,11 +1,13 @@
 #include "ytdlp.h"
 
+#include "config.h"
 #include "market.h"
 #include "rpc.h"
 
 #include <json-c/json.h>
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -59,6 +61,8 @@ typedef struct {
     Stage stage;
     char error[256];
     bool merge_started;
+    bool restored;
+    time_t last_seen;
     pid_t ffmpeg_pid;
     bool cancel;
 } Job;
@@ -409,6 +413,92 @@ static Job *job_alloc(void) {
     return NULL;
 }
 
+/* aria2 keeps the two downloads in its session, but the pairing and the
+ * merge stage only live in this process. A small journal in the config dir
+ * keeps the paths and stage; GIDs are resolved again from the download list. */
+#define JOURNAL_SEP '\x1f'
+
+static void journal_path(char *out, size_t cap) {
+    snprintf(out, cap, "%s/merge.queue", config_dir());
+}
+
+static void journal_save_locked(void) {
+    char path[PATH_MAX], tmp[PATH_MAX];
+    journal_path(path, sizeof path);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *f = fopen(tmp, "w");
+    if (!f) return;
+    bool any = false;
+    for (int i = 0; i < JOBS_MAX; i++) {
+        Job *j = &jobs[i];
+        if (!j->used || !j->merge) continue;
+        if (j->stage != STAGE_DOWNLOAD && j->stage != STAGE_MERGE) continue;
+        fprintf(f, "%d%c%d%c%s%c%s%c%s%c%s%c%s\n", (int)j->stage, JOURNAL_SEP,
+                j->youtube ? 1 : 0, JOURNAL_SEP, j->ext, JOURNAL_SEP, j->video_path,
+                JOURNAL_SEP, j->audio_path, JOURNAL_SEP, j->final_path, JOURNAL_SEP,
+                j->tmp_path);
+        any = true;
+    }
+    if (fflush(f) == 0) fsync(fileno(f));
+    fclose(f);
+    if (!any) {
+        unlink(tmp);
+        unlink(path);
+        return;
+    }
+    if (rename(tmp, path) != 0) unlink(tmp);
+}
+
+static void journal_load(void) {
+    char path[PATH_MAX];
+    journal_path(path, sizeof path);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char *line = NULL;
+    size_t cap = 0;
+    while (getline(&line, &cap, f) > 0) {
+        size_t len = strlen(line);
+        while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = 0;
+        char *field[7];
+        int n = 0;
+        field[n++] = line;
+        for (char *p = line; *p && n < 7; p++) {
+            if (*p == JOURNAL_SEP) {
+                *p = 0;
+                field[n++] = p + 1;
+            }
+        }
+        if (n != 7) continue;
+        int stage = atoi(field[0]);
+        if (stage != STAGE_DOWNLOAD && stage != STAGE_MERGE) continue;
+        if (!field[3][0] || !field[4][0] || !field[5][0] || !field[6][0]) continue;
+        bool dup = false;
+        for (int k = 0; k < JOBS_MAX; k++)
+            if (jobs[k].used && !strcmp(jobs[k].audio_path, field[4])) {
+                dup = true;
+                break;
+            }
+        if (dup) continue;
+        Job *j = job_alloc();
+        if (!j) continue;
+        memset(j, 0, sizeof *j);
+        j->used = true;
+        j->id = ++job_seq;
+        j->merge = true;
+        j->youtube = field[1][0] == '1';
+        j->stage = (Stage)stage;
+        j->restored = true;
+        j->last_seen = time(NULL);
+        snprintf(j->ext, sizeof j->ext, "%s", field[2]);
+        snprintf(j->video_path, sizeof j->video_path, "%s", field[3]);
+        snprintf(j->audio_path, sizeof j->audio_path, "%s", field[4]);
+        snprintf(j->final_path, sizeof j->final_path, "%s", field[5]);
+        snprintf(j->tmp_path, sizeof j->tmp_path, "%s", field[6]);
+    }
+    free(line);
+    fclose(f);
+}
+
 static void job_register(bool merge, const char *video_gid, const char *audio_gid,
                          const char *video_path, const char *audio_path,
                          const char *final_path, const char *tmp_path, const char *ext,
@@ -429,6 +519,7 @@ static void job_register(bool merge, const char *video_gid, const char *audio_gi
         snprintf(j->final_path, sizeof j->final_path, "%s", final_path ? final_path : "");
         snprintf(j->tmp_path, sizeof j->tmp_path, "%s", tmp_path ? tmp_path : "");
         snprintf(j->ext, sizeof j->ext, "%s", ext ? ext : "mp4");
+        if (merge) journal_save_locked();
     }
     pthread_mutex_unlock(&jobs_lock);
 }
@@ -463,6 +554,7 @@ static void *merge_worker(void *p) {
             jobs[slot].stage = STAGE_ERROR;
             snprintf(jobs[slot].error, sizeof jobs[slot].error,
                      "ffmpeg is not installed. Install it from the Marketplace.");
+            journal_save_locked();
         }
         pthread_mutex_unlock(&jobs_lock);
         return NULL;
@@ -486,6 +578,7 @@ static void *merge_worker(void *p) {
         if (jobs[slot].used && jobs[slot].id == id) {
             jobs[slot].stage = STAGE_ERROR;
             snprintf(jobs[slot].error, sizeof jobs[slot].error, "Could not start ffmpeg.");
+            journal_save_locked();
         }
         pthread_mutex_unlock(&jobs_lock);
         return NULL;
@@ -527,6 +620,7 @@ static void *merge_worker(void *p) {
             snprintf(jobs[slot].error, sizeof jobs[slot].error,
                      "Merging failed. Check that ffmpeg can read both streams.");
         }
+        journal_save_locked();
     }
     pthread_mutex_unlock(&jobs_lock);
     return NULL;
@@ -559,14 +653,185 @@ static bool is_failed(const Download *d) {
     return !strcmp(d->status, "error") || !strcmp(d->status, "removed");
 }
 
+static bool file_complete(const char *path) {
+    if (!path || !path[0]) return false;
+    struct stat sb;
+    if (stat(path, &sb) != 0 || !S_ISREG(sb.st_mode) || sb.st_size == 0) return false;
+    char ctl[PATH_MAX];
+    snprintf(ctl, sizeof ctl, "%s.aria2", path);
+    return access(ctl, F_OK) != 0;
+}
+
+/* <title>.greed-<format>-audio.<ext> -> <dir> and <title>. */
+static bool audio_base(const char *audio_path, char *dir, size_t dircap, char *base,
+                       size_t basecap) {
+    const char *slash = strrchr(audio_path, '/');
+    const char *name = slash ? slash + 1 : audio_path;
+    const char *mark = NULL;
+    for (const char *p = name; (p = strstr(p, ".greed-")) != NULL; p += 7)
+        mark = p;
+    if (!mark) return false;
+    if (slash) {
+        size_t n = (size_t)(slash - audio_path);
+        if (n >= dircap) return false;
+        memcpy(dir, audio_path, n);
+        dir[n] = 0;
+    } else {
+        snprintf(dir, dircap, ".");
+    }
+    size_t n = (size_t)(mark - name);
+    if (n >= basecap) return false;
+    memcpy(base, name, n);
+    base[n] = 0;
+    return true;
+}
+
+static bool video_name(const char *name, const char *base, const char *ext) {
+    size_t n = strlen(base);
+    if (strncmp(name, base, n) != 0 || name[n] != '.') return false;
+    const char *rest = name + n + 1;
+    if (strstr(rest, "greed-")) return false;
+    size_t elen = strlen(ext), rlen = strlen(rest);
+    if (rlen == elen) return !strcmp(rest, ext);
+    if (rlen < elen + 1) return false;
+    return rest[rlen - elen - 1] == '.' && !strcmp(rest + rlen - elen, ext);
+}
+
+static Download *match_video(Download *items, int n, const Job *j) {
+    for (int i = 0; i < n; i++) {
+        char full[PATH_MAX];
+        snprintf(full, sizeof full, "%s/%s", items[i].dir, items[i].name);
+        if (!strcmp(full, j->video_path)) return &items[i];
+    }
+    char dir[PATH_MAX], base[PATH_MAX];
+    if (!audio_base(j->audio_path, dir, sizeof dir, base, sizeof base)) return NULL;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(items[i].dir, dir) != 0) continue;
+        if (video_name(items[i].name, base, j->ext)) return &items[i];
+    }
+    return NULL;
+}
+
+static Download *match_audio(Download *items, int n, const Job *j) {
+    for (int i = 0; i < n; i++) {
+        char full[PATH_MAX];
+        snprintf(full, sizeof full, "%s/%s", items[i].dir, items[i].name);
+        if (!strcmp(full, j->audio_path)) return &items[i];
+    }
+    char dir[PATH_MAX], base[PATH_MAX];
+    if (!audio_base(j->audio_path, dir, sizeof dir, base, sizeof base)) return NULL;
+    size_t nbase = strlen(base);
+    for (int i = 0; i < n; i++) {
+        if (strcmp(items[i].dir, dir) != 0) continue;
+        const char *name = items[i].name;
+        if (strncmp(name, base, nbase) != 0 || name[nbase] != '.') continue;
+        if (strstr(name + nbase, ".greed-") && strstr(name + nbase, "-audio."))
+            return &items[i];
+    }
+    return NULL;
+}
+
+/* When both downloads finished while Greed was closed, aria2 no longer lists
+ * them. The newest matching video file is the one downloaded after the audio
+ * part was registered; an older file with the same name is left alone. */
+static bool newest_video(const char *audio_path, const char *ext, char *out, size_t cap) {
+    char dir[PATH_MAX], base[PATH_MAX];
+    if (!audio_base(audio_path, dir, sizeof dir, base, sizeof base)) return false;
+    DIR *d = opendir(dir);
+    if (!d) return false;
+    char best[PATH_MAX] = {0};
+    time_t best_time = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (!video_name(e->d_name, base, ext)) continue;
+        char path[PATH_MAX];
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        struct stat sb;
+        if (!file_complete(path) || stat(path, &sb) != 0) continue;
+        if (!best[0] || sb.st_mtime >= best_time) {
+            best_time = sb.st_mtime;
+            snprintf(best, sizeof best, "%s", path);
+        }
+    }
+    closedir(d);
+    if (!best[0]) return false;
+    snprintf(out, cap, "%s", best);
+    return true;
+}
+
 void ytdlp_track(Download *items, int n, int port) {
     pthread_mutex_lock(&jobs_lock);
     for (int i = 0; i < JOBS_MAX; i++) {
         Job *j = &jobs[i];
         if (!j->used || !j->merge) continue;
+
+        /* A job restored in the merge stage may have no aria2 rows left. */
+        if (j->stage == STAGE_MERGE && !j->merge_started) {
+            if (access(j->audio_path, F_OK) != 0 && file_complete(j->final_path)) {
+                /* ffmpeg finished before the crash and the audio was removed. */
+                j->stage = STAGE_DONE;
+                journal_save_locked();
+                continue;
+            }
+            if (!start_merge(j)) {
+                j->stage = STAGE_ERROR;
+                snprintf(j->error, sizeof j->error, "Could not start ffmpeg.");
+                journal_save_locked();
+                continue;
+            }
+        }
+
         Download *v = find_gid(items, n, j->video_gid);
-        if (!v) continue;
         Download *a = find_gid(items, n, j->audio_gid);
+        if (!v) v = match_video(items, n, j);
+        if (!a) a = match_audio(items, n, j);
+        bool changed = false;
+        if (v) {
+            j->last_seen = time(NULL);
+            if (strcmp(v->gid, j->video_gid) != 0) {
+                snprintf(j->video_gid, sizeof j->video_gid, "%s", v->gid);
+                changed = true;
+            }
+        }
+        if (a) {
+            j->last_seen = time(NULL);
+            if (strcmp(a->gid, j->audio_gid) != 0) {
+                snprintf(j->audio_gid, sizeof j->audio_gid, "%s", a->gid);
+                changed = true;
+            }
+        }
+
+        if (!v && j->stage == STAGE_DOWNLOAD && file_complete(j->audio_path)) {
+            /* Both downloads finished while Greed was closed; aria2 no longer
+             * lists them. Find the video half on disk and merge it. */
+            char found[PATH_MAX];
+            if (newest_video(j->audio_path, j->ext, found, sizeof found)) {
+                snprintf(j->video_path, sizeof j->video_path, "%s", found);
+                snprintf(j->final_path, sizeof j->final_path, "%s", found);
+                j->stage = STAGE_MERGE;
+                journal_save_locked();
+                if (!start_merge(j)) {
+                    j->stage = STAGE_ERROR;
+                    snprintf(j->error, sizeof j->error, "Could not start ffmpeg.");
+                    journal_save_locked();
+                }
+                continue;
+            }
+        }
+
+        if (!v) {
+            /* A restored job with no rows and no usable files would poll
+             * forever; give up after a grace period. */
+            if (j->restored && j->stage == STAGE_DOWNLOAD && !j->merge_started &&
+                time(NULL) - j->last_seen > 30) {
+                j->used = false;
+                journal_save_locked();
+            } else if (changed) {
+                journal_save_locked();
+            }
+            continue;
+        }
+
         /* aria2 renames the video half when the target name exists; follow
          * its name so the merge uses the file that was actually downloaded. */
         if (j->stage == STAGE_DOWNLOAD && v->file_count > 0 && v->name[0]) {
@@ -575,8 +840,19 @@ void ytdlp_track(Download *items, int n, int port) {
             if (strcmp(actual, j->video_path) != 0) {
                 snprintf(j->video_path, sizeof j->video_path, "%s", actual);
                 snprintf(j->final_path, sizeof j->final_path, "%s", actual);
+                changed = true;
             }
         }
+        if (a && a->name[0]) {
+            char actual[PATH_MAX];
+            snprintf(actual, sizeof actual, "%s/%s", a->dir, a->name);
+            if (strcmp(actual, j->audio_path) != 0) {
+                snprintf(j->audio_path, sizeof j->audio_path, "%s", actual);
+                changed = true;
+            }
+        }
+        if (changed) journal_save_locked();
+
         const char *base = strrchr(j->final_path, '/');
         if (j->final_path[0])
             snprintf(v->name, sizeof v->name, "%s", base ? base + 1 : j->final_path);
@@ -611,6 +887,7 @@ void ytdlp_track(Download *items, int n, int port) {
             if (a && is_failed(a) && !is_failed(v)) remove_rpc(port, v->gid);
             snprintf(v->status, sizeof v->status, "error");
             snprintf(v->error, sizeof v->error, "%s", j->error);
+            journal_save_locked();
             continue;
         }
 
@@ -621,7 +898,16 @@ void ytdlp_track(Download *items, int n, int port) {
             v->connections += a->connections;
         }
         bool vdone = !strcmp(v->status, "complete");
-        bool adone = a ? !strcmp(a->status, "complete") : true;
+        if (j->restored && vdone && !a && !file_complete(j->audio_path)) {
+            j->stage = STAGE_ERROR;
+            snprintf(j->error, sizeof j->error,
+                     "The audio half is missing. Remove this row and download the video again.");
+            snprintf(v->status, sizeof v->status, "error");
+            snprintf(v->error, sizeof v->error, "%s", j->error);
+            journal_save_locked();
+            continue;
+        }
+        bool adone = a ? !strcmp(a->status, "complete") : file_complete(j->audio_path);
         if (vdone && adone) {
             j->stage = STAGE_MERGE;
             snprintf(v->status, sizeof v->status, "merging");
@@ -630,11 +916,13 @@ void ytdlp_track(Download *items, int n, int port) {
             /* The audio half is done; drop its stopped result so it cannot
              * surface as a stray row later. */
             if (j->audio_gid[0]) remove_rpc(port, j->audio_gid);
+            journal_save_locked();
             if (!start_merge(j)) {
                 j->stage = STAGE_ERROR;
                 snprintf(j->error, sizeof j->error, "Could not start ffmpeg.");
                 snprintf(v->status, sizeof v->status, "error");
                 snprintf(v->error, sizeof v->error, "%s", j->error);
+                journal_save_locked();
             }
             continue;
         }
@@ -727,6 +1015,7 @@ bool ytdlp_forget(const char *gid, char *audio_gid, size_t cap) {
             if (audio_gid && cap) snprintf(audio_gid, cap, "%s", j->audio_gid);
         }
         j->used = false;
+        journal_save_locked();
         break;
     }
     pthread_mutex_unlock(&jobs_lock);
@@ -834,6 +1123,11 @@ static void *worker(void *p) {
 void ytdlp_init(YtdlpJob *j) {
     memset(j, 0, sizeof *j);
     pthread_mutex_init(&j->lock, NULL);
+    pthread_mutex_lock(&jobs_lock);
+    memset(jobs, 0, sizeof jobs);
+    job_seq = 0;
+    journal_load();
+    pthread_mutex_unlock(&jobs_lock);
 }
 
 bool ytdlp_available(void) { return market_tool_path("yt-dlp", "yt-dlp") != NULL; }

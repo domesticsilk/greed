@@ -76,7 +76,7 @@ target_include_directories(greed-proxy-check PRIVATE src ${JSONC_INCLUDE_DIRS})
 target_link_libraries(greed-proxy-check PRIVATE ${JSONC_LIBRARIES})
 add_test(NAME proxy COMMAND greed-proxy-check)
 
-add_executable(greed-ytdlp-check tests/ytdlp.c src/ytdlp.c)
+add_executable(greed-ytdlp-check tests/ytdlp.c src/ytdlp.c src/config.c)
 target_include_directories(greed-ytdlp-check PRIVATE src ${JSONC_INCLUDE_DIRS})
 target_link_libraries(greed-ytdlp-check PRIVATE ${JSONC_LIBRARIES} Threads::Threads)
 add_test(NAME ytdlp COMMAND greed-ytdlp-check)
@@ -90,5 +90,11 @@ add_executable(greed-model-check tests/model.c src/model.c)
 target_include_directories(greed-model-check PRIVATE src ${JSONC_INCLUDE_DIRS})
 target_link_libraries(greed-model-check PRIVATE ${JSONC_LIBRARIES})
 add_test(NAME model COMMAND greed-model-check)
+
+# Tests are assert-based; keep assert() active in Release builds too.
+foreach(check greed-contrast-check greed-links-check greed-proxy-check
+              greed-ytdlp-check greed-history-check greed-model-check)
+    target_compile_options(${check} PRIVATE -UNDEBUG)
+endforeach()
 
 install(TARGETS greed RUNTIME DESTINATION bin)

@@ -1,15 +1,30 @@
 #include <assert.h>
 #include <json-c/json.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "../src/rpc.h"
 #include "../src/ytdlp.h"
 
+static char fake_tool[PATH_MAX];
+
+#define CHECK(cond)                                                              \
+    do {                                                                         \
+        if (!(cond)) {                                                           \
+            fprintf(stderr, "check failed: %s (%s:%d)\n", #cond, __FILE__, __LINE__); \
+            abort();                                                             \
+        }                                                                        \
+    } while (0)
+
 const char *market_tool_path(const char *id, const char *exec) {
     (void)id;
     (void)exec;
-    return NULL;
+    return fake_tool[0] ? fake_tool : NULL;
 }
 
 void rpc_init(Rpc *r, int port) {
@@ -41,6 +56,105 @@ static void pair(const char *json, int max_height, int want_v, int want_a) {
     assert(ok == (want_v >= 0));
     assert(v == want_v);
     assert(a == want_a);
+}
+
+static void journal_recovery(void) {
+    char tmpl[] = "/tmp/greed-ytdlp-XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    CHECK(dir != NULL);
+    CHECK(setenv("XDG_CONFIG_HOME", dir, 1) == 0);
+    char cfg[PATH_MAX];
+    snprintf(cfg, sizeof cfg, "%s/greed", dir);
+    CHECK(mkdir(cfg, 0755) == 0);
+
+    char journal[PATH_MAX], video[PATH_MAX], audio[PATH_MAX], tmp[PATH_MAX];
+    snprintf(journal, sizeof journal, "%s/merge.queue", cfg);
+    snprintf(video, sizeof video, "%s/video.mp4", dir);
+    snprintf(audio, sizeof audio, "%s/video.greed-137-audio.m4a", dir);
+    snprintf(tmp, sizeof tmp, "%s/video.greed-tmp.mp4", dir);
+    FILE *f = fopen(journal, "w");
+    CHECK(f != NULL);
+    fprintf(f, "0%c0%cmp4%c%s%c%s%c%s%c%s\n", 0x1f, 0x1f, 0x1f, video, 0x1f,
+            audio, 0x1f, video, 0x1f, tmp);
+    fclose(f);
+
+    YtdlpJob job;
+    ytdlp_init(&job);
+    assert(ytdlp_busy());
+
+    /* After a restart aria2 hands out new GIDs; the paths pair them again. */
+    Download items[2];
+    memset(items, 0, sizeof items);
+    snprintf(items[0].gid, sizeof items[0].gid, "v1");
+    snprintf(items[0].status, sizeof items[0].status, "active");
+    snprintf(items[0].dir, sizeof items[0].dir, "%s", dir);
+    snprintf(items[0].name, sizeof items[0].name, "video.mp4");
+    items[0].file_count = 1;
+    snprintf(items[1].gid, sizeof items[1].gid, "a1");
+    snprintf(items[1].status, sizeof items[1].status, "active");
+    snprintf(items[1].dir, sizeof items[1].dir, "%s", dir);
+    snprintf(items[1].name, sizeof items[1].name, "video.greed-137-audio.m4a");
+    items[1].file_count = 1;
+    ytdlp_track(items, 2, 6800);
+    assert(ytdlp_is_video("v1"));
+    assert(ytdlp_is_audio_part("a1"));
+
+    /* The journal kept the pair, so a second restart recovers it too. */
+    YtdlpJob again;
+    ytdlp_init(&again);
+    assert(ytdlp_busy());
+    ytdlp_track(items, 2, 6800);
+    assert(ytdlp_is_video("v1"));
+    assert(ytdlp_is_audio_part("a1"));
+
+    /* Both halves finished while the app was closed: aria2 lists nothing,
+     * the journal is still in the download stage, and the files are done. */
+    snprintf(fake_tool, sizeof fake_tool, "%s/ffmpeg", dir);
+    FILE *ff = fopen(fake_tool, "w");
+    CHECK(ff != NULL);
+    fputs("#!/bin/sh\n"
+          "src=\n"
+          "while [ $# -gt 0 ]; do\n"
+          "  if [ \"$1\" = \"-i\" ]; then shift; src=$1; break; fi\n"
+          "  shift\n"
+          "done\n"
+          "for last; do :; done\n"
+          "cp \"$src\" \"$last\"\n",
+          ff);
+    fclose(ff);
+    CHECK(chmod(fake_tool, 0755) == 0);
+
+    FILE *vf = fopen(video, "w");
+    CHECK(vf != NULL);
+    fputs("video", vf);
+    fclose(vf);
+    FILE *af = fopen(audio, "w");
+    CHECK(af != NULL);
+    fputs("audio", af);
+    fclose(af);
+
+    f = fopen(journal, "w");
+    CHECK(f != NULL);
+    fprintf(f, "0%c0%cmp4%c%s%c%s%c%s%c%s\n", 0x1f, 0x1f, 0x1f, video, 0x1f,
+            audio, 0x1f, video, 0x1f, tmp);
+    fclose(f);
+
+    YtdlpJob recovered;
+    ytdlp_init(&recovered);
+    CHECK(ytdlp_busy());
+    ytdlp_track(NULL, 0, 6800);
+    for (int i = 0; i < 100 && ytdlp_busy(); i++) usleep(10000);
+    CHECK(!ytdlp_busy());
+    struct stat sb;
+    CHECK(stat(video, &sb) == 0 && sb.st_size == 5);
+    CHECK(access(audio, F_OK) != 0);
+
+    unlink(journal);
+    unlink(fake_tool);
+    unlink(video);
+    unlink(tmp);
+    rmdir(cfg);
+    rmdir(dir);
 }
 
 int main(void) {
@@ -91,6 +205,8 @@ int main(void) {
          "{\"url\":\"https://x/a.m4a\",\"vcodec\":\"none\",\"acodec\":\"mp4a\","
          "\"ext\":\"m4a\",\"abr\":128}]",
          0, -1, -1);
+
+    journal_recovery();
 
     puts("ytdlp ok");
     return 0;

@@ -283,9 +283,9 @@ built-in copy when the network or the catalog is unavailable.
   MKV. The final file takes the video's name, and the audio half is deleted after a successful
   merge. If that name already exists, aria2 saves the new video half as `name.1.ext` and the
   merge follows that name, so the older file is not touched.
-- Merge state lives in memory. If Greed quits during a merge, the merge does not resume: the
-  complete video half stays under the final name and the audio half remains beside it. Completed
-  merges survive restarts.
+- Merge state is kept in `~/.config/greed/merge.queue`. If Greed quits during a download or a
+  merge, the next start pairs the halves again and resumes the merge. If both downloads finished
+  while Greed was closed, the newest matching video file is merged and the audio half is removed.
 - Theme packs use Greed's theme JSON format. After installation they appear in
   Settings > Appearance next to the 76 built-in themes.
 - Installing a theme does not switch to it. Installed themes show Apply in the Marketplace and
