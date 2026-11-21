@@ -4,6 +4,14 @@
 
 const char *data_dir(void) { return GREED_MARKETPLACE_DIR; }
 
+/* theme.c's writer is not exercised here; the linker still wants it. */
+bool file_write_atomic(const char *path, const char *text) {
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
+    bool ok = fputs(text, f) >= 0;
+    return fclose(f) == 0 && ok;
+}
+
 static int failures;
 
 static void check(const char *theme, const char *what, float got, float want) {

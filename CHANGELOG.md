@@ -4,6 +4,13 @@
 
 ### Interface
 
+- Theme creator with a live preview of the real interface. Edit the palette, add a wallpaper,
+  adjust blur, scrim and panel opacity, fill in author and license details, then save locally
+  or export a submission bundle. No account or token is needed.
+- Wallpaper blur from 0 to 1, in the theme JSON as `wallpaper_blur`. Greed decodes the image
+  once, keeps a reduced copy for live changes and blurs it before uploading the texture.
+- Marketplace Community tab for reviewed creator submissions, marked `"community": true` in the
+  same catalog. Community cards show the author and license.
 - Theme packs can ship a wallpaper. Greed cover-crops it behind the interface, paints the theme
   background over it at `wallpaper_scrim`, and keeps panels translucent with `surface_alpha`.
   Text colours are checked against the scrimmed worst case.
@@ -12,6 +19,13 @@
 - Installing a theme with a wallpaper downloads and verifies both files; Remove deletes both.
 - Marketplace theme cards show a small wallpaper thumbnail, downloaded and verified once, then
   cached under `marketplace/thumbs/`.
+
+### Fixes
+
+- Deselecting one card in the multi-selection panel now removes only that card. The deselect
+  buttons had the same internal id, so the panel removed the wrong item.
+- PNG wallpapers pass header validation again. The reader consumed the signature before the PNG
+  header check, so every PNG was rejected as damaged.
 
 ## 0.1.0 - 2026-11-21
 

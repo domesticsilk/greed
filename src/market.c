@@ -3,6 +3,7 @@
 #include "catalog_data.h"
 #include "checksum.h"
 #include "config.h"
+#include "image_info.h"
 #include "theme.h"
 #include "version.h"
 
@@ -321,6 +322,7 @@ static bool catalog_parse(const char *text, MarketItem **out, int *count) {
                 snprintf(it->wallpaper_url, sizeof it->wallpaper_url, "%s", wurl);
                 snprintf(it->wallpaper_sha256, sizeof it->wallpaper_sha256, "%s", wsha);
                 snprintf(it->wallpaper_name, sizeof it->wallpaper_name, "%s", wname);
+                it->wallpaper_size = jnum(wallpaper, "size", 0);
             }
         }
         struct json_object *thumb = NULL;
@@ -334,6 +336,13 @@ static bool catalog_parse(const char *text, MarketItem **out, int *count) {
                 it->thumb_size = tsize;
             }
         }
+        struct json_object *community = NULL;
+        if (json_object_object_get_ex(e, "community", &community))
+            it->community = json_object_get_boolean(community);
+        const char *author = jstr(e, "author");
+        const char *license = jstr(e, "license");
+        if (author) snprintf(it->author, sizeof it->author, "%s", author);
+        if (license) snprintf(it->license, sizeof it->license, "%s", license);
         n++;
     }
     json_object_put(root);
@@ -723,12 +732,25 @@ static void *install_worker(void *arg) {
 
     char wp_tmp[PATH_MAX] = "", wp_target[PATH_MAX] = "";
     if (it.kind == MKT_THEME && it.wallpaper_url[0]) {
+        if (it.wallpaper_size > GREED_IMAGE_MAX_BYTES) {
+            unlink(tmp);
+            job_error(m, "The wallpaper is larger than 12 MB.");
+            return NULL;
+        }
         snprintf(wp_target, sizeof wp_target, "%s/%s", dir, it.wallpaper_name);
         snprintf(wp_tmp, sizeof wp_tmp, "%s/.greed-wallpaper-XXXXXX", dir);
         if (!fetch_verified(m, it.wallpaper_url, it.wallpaper_sha256, wp_tmp, "wallpaper",
                             err, sizeof err)) {
             unlink(tmp);
             job_error(m, err);
+            return NULL;
+        }
+        int iw = 0, ih = 0, ifmt = 0;
+        char ierr[256];
+        if (!greed_image_info(wp_tmp, &iw, &ih, &ifmt, ierr, sizeof ierr)) {
+            unlink(tmp);
+            unlink(wp_tmp);
+            job_error(m, ierr);
             return NULL;
         }
     }

@@ -38,6 +38,8 @@ add_executable(greed
     src/config.c
     src/checksum.c
     src/theme.c
+    src/image_info.c
+    src/wallpaper.c
     src/market.c
     src/request.c
     src/ytdlp.c
@@ -111,10 +113,29 @@ target_include_directories(greed-request-check PRIVATE src ${JSONC_INCLUDE_DIRS}
 target_link_libraries(greed-request-check PRIVATE ${JSONC_LIBRARIES})
 add_test(NAME request COMMAND greed-request-check)
 
+add_executable(greed-wallpaper-check tests/wallpaper.c src/wallpaper.c)
+target_include_directories(greed-wallpaper-check PRIVATE src vendor/cui)
+target_link_libraries(greed-wallpaper-check PRIVATE cui_vendor m)
+add_test(NAME wallpaper COMMAND greed-wallpaper-check)
+
+add_executable(greed-image-info-check tests/image_info.c src/image_info.c)
+target_include_directories(greed-image-info-check PRIVATE src)
+target_compile_definitions(greed-image-info-check PRIVATE
+                           GREED_MARKETPLACE_DIR="${CMAKE_SOURCE_DIR}/marketplace")
+add_test(NAME image-info COMMAND greed-image-info-check)
+
+add_executable(greed-theme-creator-check tests/theme_creator.c src/theme.c src/config.c)
+target_include_directories(greed-theme-creator-check PRIVATE src ${JSONC_INCLUDE_DIRS})
+target_compile_definitions(greed-theme-creator-check PRIVATE
+                           GREED_MARKETPLACE_DIR="${CMAKE_SOURCE_DIR}/marketplace")
+target_link_libraries(greed-theme-creator-check PRIVATE cui_vendor ${JSONC_LIBRARIES} m)
+add_test(NAME theme-creator COMMAND greed-theme-creator-check)
+
 # Tests are assert-based; keep assert() active in Release builds too.
 foreach(check greed-contrast-check greed-links-check greed-proxy-check
               greed-checksum-check greed-browser-check greed-ytdlp-check
-              greed-history-check greed-model-check greed-request-check)
+              greed-history-check greed-model-check greed-request-check
+              greed-wallpaper-check greed-image-info-check greed-theme-creator-check)
     target_compile_options(${check} PRIVATE -UNDEBUG)
 endforeach()
 

@@ -31,10 +31,15 @@ typedef struct {
     char wallpaper_url[2048];
     char wallpaper_sha256[65];
     char wallpaper_name[128];
+    long long wallpaper_size;
     /* Optional small wallpaper preview, cached under marketplace/thumbs. */
     char thumb_url[2048];
     char thumb_sha256[65];
     long long thumb_size;
+    /* Curated community submission. */
+    bool community;
+    char author[64];
+    char license[32];
     unsigned preview_bg, preview_surface, preview_accent, preview_text;
 } MarketItem;
 

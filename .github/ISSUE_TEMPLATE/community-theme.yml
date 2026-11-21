@@ -1,0 +1,63 @@
+name: Community theme
+description: Submit a theme made with Greed's Theme creator.
+title: "Theme submission: "
+labels: ["community-theme"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Export the bundle first: Theme creator > Publish > Export bundle.
+        Attach the theme JSON and wallpaper to this issue, then paste catalog-entry.json below.
+        Do not attach files you do not have the right to share.
+  - type: input
+    id: theme-name
+    attributes:
+      label: Theme name
+      placeholder: My Theme
+    validations:
+      required: true
+  - type: input
+    id: author
+    attributes:
+      label: Author
+      placeholder: Your name or handle
+    validations:
+      required: true
+  - type: dropdown
+    id: license
+    attributes:
+      label: License
+      options:
+        - CC BY 4.0
+        - CC BY-SA 4.0
+        - CC0 1.0
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One line for the marketplace card.
+      maxlength: 160
+    validations:
+      required: true
+  - type: textarea
+    id: catalog-entry
+    attributes:
+      label: Catalog entry
+      description: Paste the contents of catalog-entry.json.
+      render: json
+    validations:
+      required: true
+  - type: checkboxes
+    id: rights
+    attributes:
+      label: Rights
+      options:
+        - label: I created this theme and the wallpaper, or I have permission to share them.
+          required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything else the reviewer should know.

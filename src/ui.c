@@ -3,6 +3,7 @@
 #include "checksum.h"
 #include "config.h"
 #include "history.h"
+#include "image_info.h"
 #include "logo.h"
 #include "market.h"
 #include "model.h"
@@ -11,6 +12,7 @@
 #include "theme.h"
 #include "update.h"
 #include "version.h"
+#include "wallpaper.h"
 #include "ytdlp.h"
 #include "ffmpeg_logo.h"
 #include "ytdlp_logo.h"
@@ -27,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -131,15 +134,24 @@ typedef struct {
     bool show_add;
     bool show_settings;
     bool show_market;
-    cui_texture wallpaper_tex;
-    char wallpaper_path[PATH_MAX];
-    int wallpaper_w, wallpaper_h;
+    GreedWallpaper wallpaper;
     /* Marketplace theme thumbnails, loaded lazily and kept across redraws. */
     struct {
         char id[64];
         cui_texture tex;
     } thumbs[12];
     int thumb_count, thumb_next;
+    bool show_creator;
+    int creator_tab;
+    bool creator_dirty, creator_replace, creator_rights;
+    bool creator_discard, creator_pick, creator_wallpaper_ok;
+    bool creator_series_open;
+    char creator_error[256];
+    char creator_export_dir[PATH_MAX];
+    char creator_export_note[256];
+    char creator_entry[4096];
+    char creator_pick_out[PATH_MAX];
+    GreedThemeDraft creator;
     bool traffic_hover[3];
     char market_query[64];
     int market_cat;
@@ -331,6 +343,7 @@ static int spacing_index(float v) {
 }
 
 static const GreedTheme *active_theme(App *a) {
+    if (a->show_creator) return &a->creator.theme;
     return greed_theme_find(active_cfg(a)->theme);
 }
 
@@ -349,21 +362,14 @@ static float sidebar_width(App *a) {
 
 static void apply_theme(cui_ctx *ui, App *a) {
     Config *c = active_cfg(a);
-    greed_theme_apply(ui, greed_theme_find(c->theme), c->motion_speed, c->text_scale, c->spacing);
+    greed_theme_apply(ui, active_theme(a), c->motion_speed, c->text_scale, c->spacing);
     /* CUI's springs and tweens snap when the motion token is zero. */
     if (!c->animations) cui_theme_get(ui)->motion = 0.0f;
 }
 
 static void wallpaper_sync(cui_ctx *ui, App *a) {
     const GreedTheme *t = active_theme(a);
-    const char *path = t->wallpaper ? t->wallpaper : "";
-    if (!strcmp(a->wallpaper_path, path)) return;
-    if (a->wallpaper_tex) cui_image_destroy(ui, a->wallpaper_tex);
-    a->wallpaper_tex = 0;
-    a->wallpaper_w = a->wallpaper_h = 0;
-    snprintf(a->wallpaper_path, sizeof a->wallpaper_path, "%s", path);
-    if (path[0])
-        a->wallpaper_tex = cui_image_load(ui, path, &a->wallpaper_w, &a->wallpaper_h);
+    greed_wallpaper_get(ui, &a->wallpaper, t->wallpaper, t->wallpaper_blur);
 }
 
 typedef struct {
@@ -1859,6 +1865,8 @@ static void selection_panel(App *a, cui_ctx *ui) {
                 for (int i = 0; i < a->panel_count; i++) {
                     Download *d = find_item(a, a->panel_gid[i]);
                     if (!d) continue;
+                    /* Each card's deselect button needs its own id. */
+                    cui_push_id(ui, a->panel_gid[i]);
                     cui_card(ui, .id = a->panel_gid[i], .width = CUI_PX(230),
                              .height = CUI_FILL, .pad = 10, .gap = 6, .hoverable = false) {
                         cui_row(ui, .width = CUI_FILL, .gap = 6, .align = CUI_ALIGN_CENTER) {
@@ -1873,6 +1881,7 @@ static void selection_panel(App *a, cui_ctx *ui) {
                         cui_progress(ui, (float)download_progress(d), .height = 4,
                                      .tone = status_tone(d));
                     }
+                    cui_pop_id(ui);
                 }
                 if (drop) selection_remove(a, drop);
             }
@@ -2867,6 +2876,776 @@ static bool theme_card(cui_ctx *ui, const GreedTheme *t, bool current) {
     return clicked;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Theme creator                                                             */
+/* ------------------------------------------------------------------------- */
+
+#define GREED_CATALOG_THEMES                                                      \
+    "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes"
+
+static bool creator_has_wallpaper(const App *a) { return a->creator.wallpaper_src[0] != 0; }
+
+static bool creator_slug_path(const App *a, char *out, size_t cap) {
+    char slug[64];
+    greed_theme_slug(a->creator.name, slug, sizeof slug);
+    snprintf(out, cap, "%s/themes/%s.json", data_dir(), slug);
+    return access(out, F_OK) == 0;
+}
+
+static bool creator_name_valid(const App *a, char *err, size_t cap) {
+    const char *name = a->creator.name;
+    size_t n = strlen(name);
+    if (!n || n > 48) {
+        snprintf(err, cap, "The name must be 1 to 48 characters.");
+        return false;
+    }
+    for (size_t i = 0; i < n; i++)
+        if (iscntrl((unsigned char)name[i])) {
+            snprintf(err, cap, "The name cannot contain control characters.");
+            return false;
+        }
+    for (int i = 0; i < greed_theme_count; i++)
+        if (!strcmp(greed_themes[i].name, name)) {
+            snprintf(err, cap, "That name belongs to a built-in theme.");
+            return false;
+        }
+    char path[PATH_MAX];
+    if (creator_slug_path(a, path, sizeof path) && !a->creator_replace) {
+        snprintf(err, cap, "A saved theme already uses that name. Check Replace to overwrite it.");
+        return false;
+    }
+    return true;
+}
+
+/* Mirrors greed_theme_apply: resolve the draft, then measure the same fills
+ * and adjusted text the app is about to paint. */
+static float creator_luminance(cui_color c) {
+    float ch[3] = {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f};
+    for (int i = 0; i < 3; i++)
+        ch[i] = ch[i] <= 0.03928f ? ch[i] / 12.92f : powf((ch[i] + 0.055f) / 1.055f, 2.4f);
+    return 0.2126f * ch[0] + 0.7152f * ch[1] + 0.0722f * ch[2];
+}
+
+static float creator_contrast(cui_color a, cui_color b) {
+    float la = creator_luminance(a), lb = creator_luminance(b);
+    if (la < lb) {
+        float t = la;
+        la = lb;
+        lb = t;
+    }
+    return (la + 0.05f) / (lb + 0.05f);
+}
+
+static cui_color creator_over(cui_color fg, cui_color bg) {
+    float a = fg.a / 255.0f;
+    return (cui_color){(uint8_t)(fg.r * a + bg.r * (1 - a) + 0.5f),
+                       (uint8_t)(fg.g * a + bg.g * (1 - a) + 0.5f),
+                       (uint8_t)(fg.b * a + bg.b * (1 - a) + 0.5f), 255};
+}
+
+static bool creator_contrast_ok(App *a, cui_ctx *ui, char *err, size_t cap) {
+    cui_color *c = cui_theme_get(ui)->colors;
+    const GreedTheme *t = &a->creator.theme;
+    cui_color behind = c[CUI_TOKEN_BACKGROUND];
+    if (t->wallpaper && t->wallpaper[0]) {
+        cui_color extreme = t->dark ? CUI_RGB(0xffffff) : CUI_RGB(0x000000);
+        behind = cui_mix(behind, extreme, 1 - t->wallpaper_scrim);
+    }
+    cui_color fills[6];
+    int n = 0;
+    fills[n++] = behind;
+    fills[n++] = creator_over(c[CUI_TOKEN_SURFACE], behind);
+    fills[n++] = creator_over(c[CUI_TOKEN_SURFACE_RAISED], behind);
+    fills[n++] = creator_over(c[CUI_TOKEN_SURFACE_MUTED], behind);
+    fills[n++] = creator_over(c[CUI_TOKEN_HOVER], behind);
+    fills[n++] = creator_over(c[CUI_TOKEN_ACTIVE], behind);
+    static const cui_token text[] = {
+        CUI_TOKEN_FOREGROUND, CUI_TOKEN_TEXT_SECONDARY, CUI_TOKEN_TEXT_MUTED,
+        CUI_TOKEN_ACCENT_STRONG, CUI_TOKEN_DANGER, CUI_TOKEN_SUCCESS,
+        CUI_TOKEN_WARNING, CUI_TOKEN_INFO,
+    };
+    for (size_t i = 0; i < sizeof text / sizeof text[0]; i++)
+        for (int s = 0; s < n; s++)
+            if (creator_contrast(c[text[i]], fills[s]) < 4.5f) {
+                snprintf(err, cap, "Some text is below WCAG AA on the current colors.");
+                return false;
+            }
+    for (int s = 0; s < n; s++)
+        if (creator_contrast(c[CUI_TOKEN_FOCUS_RING], fills[s]) < 3.0f) {
+            snprintf(err, cap, "The focus ring is too faint on the current colors.");
+            return false;
+        }
+    if (creator_contrast(c[CUI_TOKEN_ACCENT_FOREGROUND], c[CUI_TOKEN_ACCENT]) < 4.5f) {
+        snprintf(err, cap, "Text on the accent color is below WCAG AA.");
+        return false;
+    }
+    return true;
+}
+
+static bool creator_validate(App *a, bool publish, char *err, size_t cap) {
+    if (!creator_name_valid(a, err, cap)) return false;
+    if (creator_has_wallpaper(a) && access(a->creator.wallpaper_src, R_OK) != 0) {
+        snprintf(err, cap, "The wallpaper file is missing. Pick it again.");
+        return false;
+    }
+    if (!publish) return true;
+    if (!a->creator.author[0]) {
+        snprintf(err, cap, "Add an author name before publishing.");
+        return false;
+    }
+    if (!a->creator.summary[0]) {
+        snprintf(err, cap, "Add a one-line summary before publishing.");
+        return false;
+    }
+    if (!a->creator.license[0]) {
+        snprintf(err, cap, "Choose a license before publishing.");
+        return false;
+    }
+    if (creator_has_wallpaper(a) && !a->creator_rights) {
+        snprintf(err, cap, "Confirm that you have the right to share the wallpaper.");
+        return false;
+    }
+    return true;
+}
+
+static void creator_color_row(App *a, cui_ctx *ui, const char *label, uint32_t *value) {
+    cui_color c = CUI_RGB(*value);
+    if (cui_prop_color(ui, label, &c)) {
+        *value = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b;
+        a->creator_dirty = true;
+    }
+}
+
+static void creator_check_row(cui_ctx *ui, bool ok, const char *text) {
+    cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+        cui_icon(ui, ok ? CUI_ICON_CHECK : CUI_ICON_CIRCLE_ALERT, 14,
+                 ok ? CUI_COLOR_SUCCESS : CUI_COLOR_WARNING);
+        cui_text(ui, text, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
+                 .width = CUI_FILL);
+    }
+}
+
+static void creator_pick_wallpaper(App *a, cui_ctx *ui, const char *path) {
+    int w = 0, h = 0, format = 0;
+    char err[256];
+    if (!greed_image_info(path, &w, &h, &format, err, sizeof err)) {
+        snprintf(a->creator_error, sizeof a->creator_error, "%s", err);
+        return;
+    }
+    int tw = 0, th = 0;
+    cui_texture tex = cui_image_load(ui, path, &tw, &th);
+    if (!tex) {
+        snprintf(a->creator_error, sizeof a->creator_error,
+                 "The image could not be decoded. Try another PNG or JPEG.");
+        return;
+    }
+    cui_image_destroy(ui, tex);
+    snprintf(a->creator.wallpaper_src, sizeof a->creator.wallpaper_src, "%s", path);
+    snprintf(a->creator.wallpaper_ext, sizeof a->creator.wallpaper_ext, "%s",
+             format == 1 ? "png" : "jpg");
+    if (a->creator.theme.wallpaper_scrim <= 0.01f)
+        a->creator.theme.wallpaper_scrim = 0.72f;
+    if (a->creator.theme.surface_alpha <= 0.01f)
+        a->creator.theme.surface_alpha = 0.82f;
+    a->creator.theme.wallpaper = a->creator.wallpaper_src;
+    a->creator_wallpaper_ok = true;
+    a->creator_dirty = true;
+    a->creator_error[0] = 0;
+}
+
+static void creator_reset_palette(App *a) {
+    const GreedTheme *cur = greed_theme_find(active_cfg(a)->theme);
+    if (!cur) return;
+    a->creator.theme = *cur;
+    a->creator.theme.name = a->creator.name;
+    a->creator.theme.wallpaper = creator_has_wallpaper(a) ? a->creator.wallpaper_src : NULL;
+    a->creator_dirty = true;
+}
+
+static void open_creator(App *a) {
+    const GreedTheme *cur = greed_theme_find(active_cfg(a)->theme);
+    if (!cur) cur = &greed_themes[0];
+    memset(&a->creator, 0, sizeof a->creator);
+    char name[64];
+    for (int i = 1; i < 100; i++) {
+        if (i == 1) snprintf(name, sizeof name, "My Theme");
+        else snprintf(name, sizeof name, "My Theme %d", i);
+        if (!greed_theme_exists(name)) break;
+    }
+    snprintf(a->creator.name, sizeof a->creator.name, "%s", name);
+    a->creator.theme = *cur;
+    a->creator.theme.name = a->creator.name;
+    a->creator.theme.wallpaper = NULL;
+    if (cur->wallpaper && cur->wallpaper[0]) {
+        snprintf(a->creator.wallpaper_src, sizeof a->creator.wallpaper_src, "%s",
+                 cur->wallpaper);
+        const char *dot = strrchr(cur->wallpaper, '.');
+        snprintf(a->creator.wallpaper_ext, sizeof a->creator.wallpaper_ext, "%s",
+                 dot && !strcasecmp(dot + 1, "png") ? "png" : "jpg");
+        a->creator.theme.wallpaper = a->creator.wallpaper_src;
+        a->creator_wallpaper_ok = true;
+    }
+    a->creator_tab = 0;
+    a->creator_dirty = false;
+    a->creator_replace = false;
+    a->creator_rights = false;
+    a->creator_discard = false;
+    a->creator_pick = false;
+    a->creator_series_open = false;
+    a->creator_error[0] = 0;
+    a->creator_export_dir[0] = 0;
+    a->creator_export_note[0] = 0;
+    a->creator_entry[0] = 0;
+    a->show_creator = true;
+}
+
+static void creator_colors_tab(App *a, cui_ctx *ui) {
+    GreedTheme *t = &a->creator.theme;
+    static const char *chrome_items[] = {"Greed", "macOS"};
+    static const char *material_items[] = {"Solid", "Glass"};
+    cui_box(ui, .dir = CUI_GRID, .min_column_width = 250, .gap = 16, .width = CUI_FILL) {
+        if (cui_prop_bool(ui, "Dark theme", &t->dark, .checkbox = true))
+            a->creator_dirty = true;
+        int chrome = t->chrome == GREED_CHROME_MACOS ? 1 : 0;
+        if (cui_prop_enum(ui, "Chrome", chrome_items, 2, &chrome)) {
+            t->chrome = chrome ? GREED_CHROME_MACOS : GREED_CHROME_GREED;
+            a->creator_dirty = true;
+        }
+        int material = t->material == GREED_MATERIAL_GLASS ? 1 : 0;
+        if (cui_prop_enum(ui, "Material", material_items, 2, &material)) {
+            t->material = material ? GREED_MATERIAL_GLASS : GREED_MATERIAL_SOLID;
+            a->creator_dirty = true;
+        }
+    }
+    char cerr[256];
+    if (creator_contrast_ok(a, ui, cerr, sizeof cerr))
+        cui_alert(ui, "Text meets WCAG AA on every surface.", .tone = CUI_TONE_SUCCESS,
+                  .icon = CUI_ICON_CHECK);
+    else
+        cui_alert(ui, "Some colors are hard to read.", .description = cerr,
+                  .tone = CUI_TONE_WARNING, .icon = CUI_ICON_CIRCLE_ALERT);
+
+    cui_box(ui, .dir = CUI_GRID, .min_column_width = 250, .gap = 16, .width = CUI_FILL) {
+        creator_color_row(a, ui, "Background", &t->bg);
+        creator_color_row(a, ui, "Surface", &t->surface);
+        creator_color_row(a, ui, "Raised", &t->raised);
+        creator_color_row(a, ui, "Muted", &t->muted);
+        creator_color_row(a, ui, "Border", &t->border);
+        creator_color_row(a, ui, "Text", &t->text);
+        creator_color_row(a, ui, "Secondary text", &t->dim);
+        creator_color_row(a, ui, "Accent", &t->accent);
+        creator_color_row(a, ui, "Accent strong", &t->accent_strong);
+        creator_color_row(a, ui, "Accent text", &t->accent_fg);
+        creator_color_row(a, ui, "Danger", &t->danger);
+        creator_color_row(a, ui, "Success", &t->success);
+        creator_color_row(a, ui, "Warning", &t->warning);
+        creator_color_row(a, ui, "Info", &t->info);
+    }
+
+    if (t->material == GREED_MATERIAL_GLASS) {
+        cui_heading(ui, "Glass", 4);
+        cui_box(ui, .dir = CUI_GRID, .min_column_width = 250, .gap = 16, .width = CUI_FILL) {
+            creator_color_row(a, ui, "Tint", &t->glass_tint);
+            creator_color_row(a, ui, "Highlight", &t->glass_highlight);
+        }
+        if (cui_prop_float(ui, "Tint opacity", &t->glass_tint_alpha, .min = 0, .max = 1,
+                           .step = 0.01f))
+            a->creator_dirty = true;
+        if (cui_prop_float(ui, "Highlight opacity", &t->glass_highlight_alpha, .min = 0,
+                           .max = 1, .step = 0.01f))
+            a->creator_dirty = true;
+        if (cui_prop_float(ui, "Shadow opacity", &t->glass_shadow_alpha, .min = 0, .max = 1,
+                           .step = 0.01f))
+            a->creator_dirty = true;
+    }
+
+    cui_accordion(ui, "Chart series", &a->creator_series_open) {
+        cui_box(ui, .dir = CUI_GRID, .min_column_width = 250, .gap = 16, .width = CUI_FILL) {
+            for (int i = 0; i < 6; i++) {
+                char label[32];
+                snprintf(label, sizeof label, "Series %d", i + 1);
+                creator_color_row(a, ui, label, &t->series[i]);
+            }
+        }
+    }
+    cui_muted(ui, "The preview applies the same readability pass used at runtime. "
+                  "A color may be nudged to keep text readable.");
+}
+
+typedef struct {
+    cui_texture tex;
+    int w, h;
+    uint32_t bg;
+    float scrim, alpha;
+    uint32_t surface, accent, text;
+} CreatorPreview;
+
+static void creator_preview_paint(cui_ctx *ui, cui_rect r, void *user) {
+    CreatorPreview *p = user;
+    cui_draw_rect(ui, r, CUI_CORNERS(10), CUI_RGB(p->bg));
+    if (p->tex) {
+        WallpaperPaint wp = {p->tex, p->w, p->h};
+        paint_wallpaper(ui, r, &wp);
+        cui_draw_rect(ui, r, CUI_CORNERS(10), cui_alpha(CUI_RGB(p->bg), p->scrim));
+    }
+    float pad = r.w * 0.045f;
+    cui_rect panel = {r.x + pad, r.y + pad, r.w - pad * 2, r.h - pad * 2};
+    cui_draw_rect(ui, panel, CUI_CORNERS(8), cui_alpha(CUI_RGB(p->surface), p->alpha));
+    float bar = panel.h * 0.08f;
+    cui_draw_rect(ui, (cui_rect){panel.x + pad * 0.6f, panel.y + pad * 0.6f,
+                                 panel.w * 0.34f, bar},
+                  CUI_CORNERS(bar * 0.5f), CUI_RGB(p->accent));
+    for (int i = 0; i < 3; i++) {
+        float w = panel.w * (i == 2 ? 0.42f : 0.68f);
+        cui_draw_rect(ui, (cui_rect){panel.x + pad * 0.6f,
+                                     panel.y + pad * 0.6f + bar * (1.8f + i * 1.4f), w,
+                                     bar * 0.62f},
+                      CUI_CORNERS(bar * 0.3f),
+                      cui_alpha(CUI_RGB(p->text), i == 0 ? 0.85f : 0.55f));
+    }
+}
+
+static void creator_wallpaper_tab(App *a, cui_ctx *ui) {
+    GreedTheme *t = &a->creator.theme;
+    bool has = creator_has_wallpaper(a);
+    int drop = cui_dropzone(ui, "creator-drop", .title = "Drop a wallpaper",
+                            .description = "PNG or JPEG, up to 12 MB.",
+                            .icon = CUI_ICON_IMAGE, .accept = "png;jpg;jpeg",
+                            .height = 130, .width = CUI_FILL);
+    if (drop > 0) {
+        const char *path = cui_dropped_file(ui, 0);
+        if (path) creator_pick_wallpaper(a, ui, path);
+    } else if (drop < 0) {
+        a->creator_pick = true;
+    }
+    if (a->creator_error[0])
+        cui_text(ui, a->creator_error, .size = 12, .color = CUI_COLOR_DANGER,
+                 .width = CUI_FILL);
+
+    CreatorPreview p = {a->wallpaper.tex, a->wallpaper.w, a->wallpaper.h, t->bg,
+                        t->wallpaper_scrim, t->surface_alpha, t->surface, t->accent,
+                        t->text};
+    cui_canvas(ui, "creator-preview", CUI_FILL, CUI_PX(150), creator_preview_paint, &p,
+               sizeof p);
+
+    if (has) {
+        cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+            const char *base = strrchr(a->creator.wallpaper_src, '/');
+            cui_text(ui, base ? base + 1 : a->creator.wallpaper_src, .size = 12,
+                     .color = CUI_COLOR_TEXT_SECONDARY, .width = CUI_FILL, .nowrap = true);
+            if (cui_button(ui, "Remove wallpaper", .size = CUI_SIZE_SM,
+                           .variant = CUI_BUTTON_GHOST, .icon = CUI_ICON_TRASH_2)) {
+                a->creator.wallpaper_src[0] = 0;
+                a->creator.wallpaper_ext[0] = 0;
+                a->creator.theme.wallpaper = NULL;
+                a->creator_wallpaper_ok = false;
+                a->creator_dirty = true;
+            }
+        }
+    } else {
+        cui_muted(ui, "No wallpaper. The theme uses its background color.");
+    }
+
+    if (cui_prop_float(ui, "Blur", &t->wallpaper_blur, .min = 0, .max = 1,
+                       .step = 0.05f, .disabled = !has,
+                       .tooltip = "Softens the wallpaper behind the interface.")) {
+        /* The renderer caches per blur value, so keep the drag to 21 steps. */
+        t->wallpaper_blur = (float)((int)(t->wallpaper_blur * 20 + 0.5f)) / 20;
+        a->creator_dirty = true;
+    }
+    if (cui_prop_float(ui, "Scrim", &t->wallpaper_scrim, .min = 0, .max = 1,
+                       .step = 0.01f, .disabled = !has,
+                       .tooltip = "How strongly the background color covers the wallpaper."))
+        a->creator_dirty = true;
+    if (cui_prop_float(ui, "Panel opacity", &t->surface_alpha, .min = 0, .max = 1,
+                       .step = 0.01f, .disabled = !has,
+                       .tooltip = "Lower values show more of the wallpaper behind panels."))
+        a->creator_dirty = true;
+    if (has && t->wallpaper_scrim < 0.5f)
+        cui_text(ui, "A scrim below 0.5 can make text hard to read on bright art.",
+                 .size = 12, .color = CUI_COLOR_WARNING);
+    if (has && t->surface_alpha < 0.6f)
+        cui_text(ui, "Panels below 0.6 opacity can let busy art through.",
+                 .size = 12, .color = CUI_COLOR_WARNING);
+    cui_muted(ui, "PNG or JPEG, 12 MB, 24 megapixels, longest side 8192 px.");
+}
+
+static void creator_details_tab(App *a, cui_ctx *ui) {
+    GreedThemeDraft *d = &a->creator;
+    if (cui_input(ui, "creator-name", d->name, 49, .label = "Name",
+                  .hint = "Up to 48 characters. Files use a lowercase slug.",
+                  .width = CUI_FILL))
+        a->creator_dirty = true;
+    char saved[PATH_MAX];
+    if (creator_slug_path(a, saved, sizeof saved)) {
+        if (cui_checkbox(ui, "Replace my saved theme", &a->creator_replace))
+            a->creator_dirty = true;
+        cui_muted(ui, "A saved theme already uses this name. Replace overwrites it.");
+    }
+    if (cui_input(ui, "creator-author", d->author, sizeof d->author, .label = "Author",
+                  .placeholder = "Your name", .width = CUI_FILL))
+        a->creator_dirty = true;
+    if (cui_input(ui, "creator-summary", d->summary, sizeof d->summary, .label = "Summary",
+                  .placeholder = "One line about the palette", .width = CUI_FILL))
+        a->creator_dirty = true;
+    if (cui_textarea(ui, "creator-description", d->description, sizeof d->description,
+                     .label = "Description", .height = 90,
+                     .placeholder = "What the theme is for", .width = CUI_FILL))
+        a->creator_dirty = true;
+    static const char *licenses[] = {"CC BY 4.0", "CC BY-SA 4.0", "CC0 1.0"};
+    int lic = 0;
+    for (int i = 0; i < 3; i++)
+        if (!strcmp(d->license, licenses[i])) lic = i;
+    if (!d->license[0]) snprintf(d->license, sizeof d->license, "%s", licenses[0]);
+    if (cui_select(ui, "creator-license", licenses, 3, &lic, .label = "License",
+                   .width = CUI_PX(190))) {
+        snprintf(d->license, sizeof d->license, "%s", licenses[lic]);
+        a->creator_dirty = true;
+    }
+    if (cui_checkbox(ui, "I created this theme and have the right to share the wallpaper.",
+                     &a->creator_rights, .disabled = !creator_has_wallpaper(a)))
+        a->creator_dirty = true;
+    cui_heading(ui, "Preview", 4);
+    theme_card(ui, &a->creator.theme, false);
+}
+
+static char *creator_catalog_entry(App *a, const char *slug, const char *wp_name,
+                                   const char *theme_sha, long long theme_size,
+                                   const char *wp_sha, long long wp_size) {
+    GreedTheme *t = &a->creator.theme;
+    struct json_object *o = json_object_new_object();
+    json_object_object_add(o, "id", json_object_new_string(slug));
+    json_object_object_add(o, "type", json_object_new_string("theme"));
+    json_object_object_add(o, "name", json_object_new_string(a->creator.name));
+    json_object_object_add(o, "category", json_object_new_string("Theme"));
+    json_object_object_add(o, "version", json_object_new_string("1.0.0"));
+    json_object_object_add(o, "summary", json_object_new_string(a->creator.summary));
+    json_object_object_add(o, "description", json_object_new_string(a->creator.description));
+    json_object_object_add(o, "source",
+                           json_object_new_string(a->creator.author[0] ? a->creator.author
+                                                                       : "Greed community"));
+    json_object_object_add(o, "author", json_object_new_string(a->creator.author));
+    json_object_object_add(o, "license", json_object_new_string(a->creator.license));
+    json_object_object_add(o, "community", json_object_new_boolean(true));
+    struct json_object *asset = json_object_new_object();
+    char url[1024];
+    snprintf(url, sizeof url, "%s/%s.json", GREED_CATALOG_THEMES, slug);
+    json_object_object_add(asset, "url", json_object_new_string(url));
+    json_object_object_add(asset, "sha256", json_object_new_string(theme_sha));
+    json_object_object_add(asset, "size", json_object_new_int64(theme_size));
+    json_object_object_add(o, "asset", asset);
+    if (wp_name && wp_name[0]) {
+        struct json_object *wp = json_object_new_object();
+        snprintf(url, sizeof url, "%s/%s", GREED_CATALOG_THEMES, wp_name);
+        json_object_object_add(wp, "url", json_object_new_string(url));
+        json_object_object_add(wp, "sha256", json_object_new_string(wp_sha));
+        json_object_object_add(wp, "name", json_object_new_string(wp_name));
+        json_object_object_add(wp, "size", json_object_new_int64(wp_size));
+        json_object_object_add(o, "wallpaper", wp);
+    }
+    struct json_object *preview = json_object_new_object();
+    char hex[8];
+#define CREATOR_PREVIEW_COLOR(key, value)                                          \
+    do {                                                                           \
+        snprintf(hex, sizeof hex, "#%06x", (unsigned)((value) & 0xffffffu));        \
+        json_object_object_add(preview, key, json_object_new_string(hex));         \
+    } while (0)
+    CREATOR_PREVIEW_COLOR("bg", t->bg);
+    CREATOR_PREVIEW_COLOR("surface", t->surface);
+    CREATOR_PREVIEW_COLOR("accent", t->accent);
+    CREATOR_PREVIEW_COLOR("text", t->text);
+#undef CREATOR_PREVIEW_COLOR
+    json_object_object_add(o, "preview", preview);
+    char *text = strdup(json_object_to_json_string_ext(o, JSON_C_TO_STRING_PRETTY));
+    json_object_put(o);
+    return text;
+}
+
+static bool creator_export(App *a, cui_ctx *ui) {
+    char err[256];
+    if (!creator_validate(a, true, err, sizeof err)) {
+        snprintf(a->creator_error, sizeof a->creator_error, "%s", err);
+        return false;
+    }
+    if (!creator_contrast_ok(a, ui, err, sizeof err)) {
+        snprintf(a->creator_error, sizeof a->creator_error, "%s", err);
+        return false;
+    }
+    char slug[64];
+    greed_theme_slug(a->creator.name, slug, sizeof slug);
+    char dir[PATH_MAX], path[PATH_MAX];
+    bool made = false;
+    for (int i = 1; i < 100 && !made; i++) {
+        if (i == 1) snprintf(dir, sizeof dir, "%s/%s-submission", a->cfg.download_dir, slug);
+        else snprintf(dir, sizeof dir, "%s/%s-submission-%d", a->cfg.download_dir, slug, i);
+        if (mkdir(dir, 0755) == 0) made = true;
+        else if (errno != EEXIST) break;
+    }
+    if (!made) {
+        snprintf(a->creator_error, sizeof a->creator_error,
+                 "Could not create the export folder in %s.", a->cfg.download_dir);
+        return false;
+    }
+    char wp_name[128] = "";
+    if (creator_has_wallpaper(a))
+        snprintf(wp_name, sizeof wp_name, "%s.%s", slug, a->creator.wallpaper_ext);
+    char *json = greed_theme_json(&a->creator, wp_name[0] ? wp_name : NULL);
+    if (!json) {
+        snprintf(a->creator_error, sizeof a->creator_error,
+                 "Could not build the theme file.");
+        return false;
+    }
+    snprintf(path, sizeof path, "%s/%s.json", dir, slug);
+    bool ok = file_write_atomic(path, json);
+    free(json);
+    if (ok && wp_name[0]) {
+        char wp_path[PATH_MAX];
+        snprintf(wp_path, sizeof wp_path, "%s/%s", dir, wp_name);
+        ok = greed_theme_copy_file(a->creator.wallpaper_src, wp_path);
+    }
+    if (!ok) {
+        snprintf(a->creator_error, sizeof a->creator_error,
+                 "Could not write the export files. Check your disk space.");
+        return false;
+    }
+    char theme_sha[65] = "", wp_sha[65] = "";
+    struct stat st;
+    long long theme_size = 0, wp_size = 0;
+    if (stat(path, &st) == 0) theme_size = (long long)st.st_size;
+    if (!checksum_hash_file(path, theme_sha, sizeof theme_sha)) theme_sha[0] = 0;
+    if (wp_name[0]) {
+        char wp_path[PATH_MAX];
+        snprintf(wp_path, sizeof wp_path, "%s/%s", dir, wp_name);
+        if (stat(wp_path, &st) == 0) wp_size = (long long)st.st_size;
+        if (!checksum_hash_file(wp_path, wp_sha, sizeof wp_sha)) wp_sha[0] = 0;
+    }
+    char *entry = creator_catalog_entry(a, slug, wp_name[0] ? wp_name : NULL, theme_sha,
+                                        theme_size, wp_sha, wp_size);
+    if (!entry) {
+        snprintf(a->creator_error, sizeof a->creator_error,
+                 "Could not build the catalog entry.");
+        return false;
+    }
+    snprintf(path, sizeof path, "%s/catalog-entry.json", dir);
+    ok = file_write_atomic(path, entry);
+    if (ok) {
+        snprintf(a->creator_entry, sizeof a->creator_entry, "%s", entry);
+    }
+    free(entry);
+    char readme[2048];
+    snprintf(readme, sizeof readme,
+             "Greed community theme submission\n\n"
+             "1. Open the Greed Community issue and attach %s.json%s.\n"
+             "2. Paste catalog-entry.json into the catalog entry field.\n"
+             "3. Say whether you made the wallpaper or have permission to share it.\n\n"
+             "Files in this folder:\n"
+             "  %s.json            the theme\n"
+             "%s"
+             "  catalog-entry.json  the marketplace item\n\n"
+             "Theme: %s\nAuthor: %s\nLicense: %s\n",
+             slug, wp_name[0] ? " and the wallpaper" : "", slug,
+             wp_name[0] ? "  (wallpaper)\n" : "", a->creator.name, a->creator.author,
+             a->creator.license);
+    snprintf(path, sizeof path, "%s/README.txt", dir);
+    ok = ok && file_write_atomic(path, readme);
+    if (!ok) {
+        snprintf(a->creator_error, sizeof a->creator_error,
+                 "Could not finish the export bundle.");
+        return false;
+    }
+    snprintf(a->creator_export_dir, sizeof a->creator_export_dir, "%s", dir);
+    char tsize[32], wsize[32];
+    fmt_bytes(tsize, sizeof tsize, (unsigned long long)theme_size);
+    if (wp_name[0]) {
+        fmt_bytes(wsize, sizeof wsize, (unsigned long long)wp_size);
+        snprintf(a->creator_export_note, sizeof a->creator_export_note,
+                 "Theme %s, wallpaper %s, checksums recorded.", tsize, wsize);
+    } else {
+        snprintf(a->creator_export_note, sizeof a->creator_export_note,
+                 "Theme %s, checksums recorded.", tsize);
+    }
+    a->creator_error[0] = 0;
+    cui_toast(ui, "Submission exported", .description = dir, .tone = CUI_TONE_SUCCESS);
+    return true;
+}
+
+static void creator_save(App *a, cui_ctx *ui) {
+    char err[256], path[PATH_MAX];
+    if (!creator_validate(a, false, err, sizeof err)) {
+        snprintf(a->creator_error, sizeof a->creator_error, "%s", err);
+        return;
+    }
+    if (!greed_theme_save(&a->creator, a->creator_replace, path, sizeof path, err,
+                          sizeof err)) {
+        snprintf(a->creator_error, sizeof a->creator_error, "%s", err);
+        return;
+    }
+    greed_theme_reload();
+    a->show_creator = false;
+    a->creator_dirty = false;
+    apply_theme_name(a, a->creator.name);
+    a->creator_error[0] = 0;
+    cui_toast(ui, "Theme saved", .description = path, .tone = CUI_TONE_SUCCESS);
+}
+
+static void url_encode(const char *in, char *out, size_t cap) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t n = 0;
+    for (const unsigned char *p = (const unsigned char *)in; *p && n + 4 < cap; p++) {
+        if (isalnum(*p) || strchr("-._~", *p)) out[n++] = (char)*p;
+        else if (*p == ' ') out[n++] = '+';
+        else {
+            out[n++] = '%';
+            out[n++] = hex[*p >> 4];
+            out[n++] = hex[*p & 15];
+        }
+    }
+    out[n] = 0;
+}
+
+static void creator_open_issue(App *a) {
+    if (!a->creator_export_dir[0]) return;
+    char title[256], body[1024], etitle[1024], ebody[4096], url[8192];
+    snprintf(title, sizeof title, "Theme submission: %s", a->creator.name);
+    snprintf(body, sizeof body,
+             "Theme: %s\nAuthor: %s\nLicense: %s\n\nSummary: %s\n\n"
+             "The exported bundle is ready in the folder named in the export step. "
+             "Attach the theme JSON%s and paste the catalog entry.",
+             a->creator.name, a->creator.author, a->creator.license, a->creator.summary,
+             creator_has_wallpaper(a) ? " and wallpaper" : "");
+    url_encode(title, etitle, sizeof etitle);
+    url_encode(body, ebody, sizeof ebody);
+    snprintf(url, sizeof url,
+             "https://github.com/domesticsilk/greed/issues/new?template=community-theme.yml"
+             "&title=%s&body=%s",
+             etitle, ebody);
+    cui_app_open_url(url);
+}
+
+static void creator_publish_tab(App *a, cui_ctx *ui) {
+    char err[256];
+    bool name_ok = creator_name_valid(a, err, sizeof err);
+    creator_check_row(ui, name_ok, name_ok ? "Name is valid and available." : err);
+    char cerr[256];
+    bool contrast_ok = creator_contrast_ok(a, ui, cerr, sizeof cerr);
+    creator_check_row(ui, contrast_ok,
+                      contrast_ok ? "Text meets WCAG AA on every surface." : cerr);
+    bool wall_ok = !creator_has_wallpaper(a) ||
+                   (a->creator_wallpaper_ok &&
+                    access(a->creator.wallpaper_src, R_OK) == 0);
+    creator_check_row(ui, wall_ok,
+                      !creator_has_wallpaper(a) ? "No wallpaper attached."
+                                                : wall_ok ? "Wallpaper is a valid PNG or JPEG."
+                                                          : "The wallpaper is missing or invalid.");
+    bool meta_ok = a->creator.author[0] && a->creator.summary[0] && a->creator.license[0];
+    creator_check_row(ui, meta_ok,
+                      meta_ok ? "Author, summary and license are filled."
+                              : "Author, summary and license are required.");
+    bool rights_ok = !creator_has_wallpaper(a) || a->creator_rights;
+    creator_check_row(ui, rights_ok,
+                      rights_ok ? "Sharing rights are confirmed."
+                                : "Confirm the wallpaper sharing rights.");
+
+    if (a->creator_error[0])
+        cui_text(ui, a->creator_error, .size = 12, .color = CUI_COLOR_DANGER,
+                 .width = CUI_FILL);
+    if (a->creator_export_dir[0]) {
+        cui_text(ui, a->creator_export_dir, .size = 11, .color = CUI_COLOR_TEXT_SECONDARY,
+                 .width = CUI_FILL);
+        if (a->creator_export_note[0]) cui_muted(ui, a->creator_export_note);
+    }
+
+    cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+        if (cui_button(ui, "Export submission", .variant = CUI_BUTTON_PRIMARY,
+                       .icon = CUI_ICON_DOWNLOAD))
+            creator_export(a, ui);
+        if (cui_button(ui, "Open export folder", .variant = CUI_BUTTON_GHOST,
+                       .icon = CUI_ICON_FOLDER_OPEN,
+                       .disabled = !a->creator_export_dir[0]))
+            open_folder(a->creator_export_dir);
+        if (cui_button(ui, "Copy catalog entry", .variant = CUI_BUTTON_SECONDARY,
+                       .icon = CUI_ICON_CLIPBOARD, .disabled = !a->creator_entry[0])) {
+            cui_clipboard_set(ui, a->creator_entry);
+            cui_toast(ui, "Catalog entry copied", .tone = CUI_TONE_SUCCESS);
+        }
+        if (cui_button(ui, "Open GitHub issue", .variant = CUI_BUTTON_SECONDARY,
+                       .icon = CUI_ICON_EXTERNAL_LINK,
+                       .disabled = !a->creator_export_dir[0]))
+            creator_open_issue(a);
+    }
+    cui_alert(ui, "Community themes are reviewed before listing.",
+              .description = "Only submit art you created or have permission to share. "
+                             "Fan art without permission is removed.",
+              .tone = CUI_TONE_WARNING, .icon = CUI_ICON_CIRCLE_ALERT);
+}
+
+static void creator_dialog(App *a, cui_ctx *ui) {
+    if (!a->show_creator) return;
+    static const char *tabs[] = {"Colors", "Wallpaper", "Details", "Publish"};
+    static const char *icons[] = {CUI_ICON_PALETTE, CUI_ICON_IMAGE, CUI_ICON_FILE_TEXT,
+                                  CUI_ICON_UPLOAD};
+    float body_h = cui_viewport_size(ui).y - 300;
+    if (body_h > 430) body_h = 430;
+    if (body_h < 140) body_h = 140;
+    cui_dialog(ui, "Theme creator", &a->show_creator, .width = 980,
+               .persistent = a->creator_dirty, .no_close_button = a->creator_dirty,
+               .description = "Design a palette, add a wallpaper, then save it or submit it "
+                              "to the Community.") {
+        cui_tabs(ui, "creator-tabs", tabs, 4, &a->creator_tab, .icons = icons);
+        cui_scroll(ui, .id = "creator-body", .width = CUI_FILL, .height = CUI_PX(body_h),
+                   .gap = 16, .fade_edges = true,
+                   .fade_color = CUI_COLOR_SURFACE_RAISED) {
+            if (a->creator_tab == 0) creator_colors_tab(a, ui);
+            else if (a->creator_tab == 1) creator_wallpaper_tab(a, ui);
+            else if (a->creator_tab == 2) creator_details_tab(a, ui);
+            else creator_publish_tab(a, ui);
+        }
+        cui_dialog_footer(ui) {
+            if (cui_button(ui, "Reset to current theme", .variant = CUI_BUTTON_GHOST,
+                           .icon = CUI_ICON_REFRESH_CW)) {
+                creator_reset_palette(a);
+                a->creator_error[0] = 0;
+            }
+            cui_spacer(ui);
+            if (cui_button(ui, "Cancel", .variant = CUI_BUTTON_GHOST)) {
+                if (a->creator_dirty) a->creator_discard = true;
+                else a->show_creator = false;
+            }
+            if (cui_button(ui, "Save", .variant = CUI_BUTTON_PRIMARY,
+                           .icon = CUI_ICON_SAVE))
+                creator_save(a, ui);
+        }
+    }
+}
+
+static void creator_file_picker(App *a, cui_ctx *ui) {
+    if (!a->creator_pick) return;
+    char path[PATH_MAX];
+    const char *home = getenv("HOME");
+    if (cui_file_picker(ui, "creator-wallpaper", &a->creator_pick, path, sizeof path,
+                        .title = "Choose a wallpaper",
+                        .filter = "*.png;*.jpg;*.jpeg",
+                        .filter_label = "PNG or JPEG images", .start = home))
+        creator_pick_wallpaper(a, ui, path);
+}
+
+static void creator_discard_dialog(App *a, cui_ctx *ui) {
+    if (!a->creator_discard) return;
+    cui_dialog(ui, "Discard changes?", &a->creator_discard, .width = 420) {
+        cui_text(ui, "The palette changes and details in this draft will be lost.",
+                 .size = 13, .color = CUI_COLOR_TEXT_SECONDARY, .width = CUI_FILL);
+        cui_dialog_footer(ui) {
+            if (cui_button(ui, "Keep editing", .variant = CUI_BUTTON_GHOST))
+                a->creator_discard = false;
+            if (cui_button(ui, "Discard", .variant = CUI_BUTTON_DANGER)) {
+                a->creator_discard = false;
+                a->creator_dirty = false;
+                a->show_creator = false;
+            }
+        }
+    }
+}
+
 /* The keymap is a reference, not a recorder: shortcuts are fixed for now. */
 static void keys_tab(App *a, cui_ctx *ui) {
     static const char *cats[] = {"App", "List", "Nav", "Vim"};
@@ -3186,8 +3965,11 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                 cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
                     cui_text(ui, count, .size = 11, .color = CUI_COLOR_TEXT_SECONDARY);
                     cui_spacer(ui);
-                    cui_muted(ui, "Changes preview instantly; Save keeps it.");
+                    if (cui_button(ui, "Create theme", .size = CUI_SIZE_SM,
+                                   .icon = CUI_ICON_PALETTE))
+                        open_creator(a);
                 }
+                cui_muted(ui, "Changes preview instantly; Save keeps it.");
                 if (!shown) {
                     cui_muted(ui, "No theme matches that search.");
                 } else {
@@ -3271,7 +4053,8 @@ static cui_texture ffmpeg_logo_texture(cui_ctx *ui) {
 
 static bool market_matches(const MarketItem *it, const char *query, int cat) {
     if (cat == 1 && it->kind != MKT_ENGINE) return false;
-    if (cat == 2 && it->kind != MKT_THEME) return false;
+    if (cat == 2 && (it->kind != MKT_THEME || it->community)) return false;
+    if (cat == 3 && (it->kind != MKT_THEME || !it->community)) return false;
     if (!query[0]) return true;
     return contains_ci(it->name, query) || contains_ci(it->summary, query) ||
            contains_ci(it->category, query) || contains_ci(it->id, query);
@@ -3335,6 +4118,9 @@ static void market_card(App *a, cui_ctx *ui, const MarketItem *it, int index, bo
                     if (featured)
                         cui_badge(ui, "Featured", .tone = CUI_TONE_ACCENT,
                                   .size = CUI_SIZE_SM);
+                    if (it->community)
+                        cui_badge(ui, "Community", .tone = CUI_TONE_VIOLET,
+                                  .size = CUI_SIZE_SM);
                     if (applied)
                         cui_badge(ui, "Applied", .tone = CUI_TONE_SUCCESS,
                                   .size = CUI_SIZE_SM);
@@ -3360,8 +4146,17 @@ static void market_card(App *a, cui_ctx *ui, const MarketItem *it, int index, bo
                      .nowrap = true, .width = CUI_FILL);
 
         cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-            cui_text(ui, it->source[0] ? it->source : it->category, .size = 10,
-                     .color = CUI_COLOR_TEXT_MUTED, .nowrap = true, .width = CUI_FILL);
+            if (it->community) {
+                char by[128];
+                snprintf(by, sizeof by, "by %s%s%s",
+                         it->author[0] ? it->author : "a Greed user",
+                         it->license[0] ? ", " : "", it->license);
+                cui_text(ui, by, .size = 10, .color = CUI_COLOR_TEXT_MUTED,
+                         .nowrap = true, .width = CUI_FILL);
+            } else {
+                cui_text(ui, it->source[0] ? it->source : it->category, .size = 10,
+                         .color = CUI_COLOR_TEXT_MUTED, .nowrap = true, .width = CUI_FILL);
+            }
             if (downloading) {
                 cui_text(ui, "Installing", .size = 11, .color = CUI_COLOR_TEXT_SECONDARY);
                 cui_progress(ui, a->mkt.progress, .height = 6, .width = CUI_PX(120),
@@ -3420,9 +4215,24 @@ static void market_dialog(App *a, cui_ctx *ui) {
             cui_text(ui, installed, .size = 11, .color = CUI_COLOR_TEXT_MUTED);
         }
 
-        static const char *tabs[] = {"All", "Engines", "Themes"};
-        static const char *icons[] = {CUI_ICON_GRID_3X3, CUI_ICON_ZAP, CUI_ICON_PALETTE};
-        cui_tabs(ui, "market-tabs", tabs, 3, &a->market_cat, .icons = icons);
+        static const char *tabs[] = {"All", "Engines", "Themes", "Community"};
+        static const char *icons[] = {CUI_ICON_GRID_3X3, CUI_ICON_ZAP, CUI_ICON_PALETTE,
+                                      CUI_ICON_USERS};
+        cui_tabs(ui, "market-tabs", tabs, 4, &a->market_cat, .icons = icons);
+
+        if (a->market_cat == 3) {
+            cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_CENTER) {
+                cui_column(ui, .width = CUI_FILL, .gap = 2) {
+                    cui_text(ui, "Community themes", .size = 14, .font = CUI_FONT_MEDIUM,
+                             .width = CUI_FILL);
+                    cui_text(ui, "Made by Greed users. Reviewed before listing.", .size = 11,
+                             .color = CUI_COLOR_TEXT_SECONDARY, .width = CUI_FILL);
+                }
+                if (cui_button(ui, "Create theme", .size = CUI_SIZE_SM,
+                               .variant = CUI_BUTTON_PRIMARY, .icon = CUI_ICON_PALETTE))
+                    open_creator(a);
+            }
+        }
 
         if (v->note[0]) cui_muted(ui, v->note);
 
@@ -3457,9 +4267,15 @@ static void market_dialog(App *a, cui_ctx *ui) {
                        .gap = 10, .fade_edges = true,
                        .fade_color = CUI_COLOR_SURFACE_RAISED) {
                 if (!total) {
-                    if (cui_empty_state(ui, "No matches", .icon = CUI_ICON_SEARCH,
-                                        .description = "Try another word or category.",
-                                        .action = "Clear filters")) {
+                    if (a->market_cat == 3) {
+                        if (cui_empty_state(ui, "No community themes yet",
+                                            .icon = CUI_ICON_USERS,
+                                            .description = "Be the first to share a palette.",
+                                            .action = "Create the first one"))
+                            open_creator(a);
+                    } else if (cui_empty_state(ui, "No matches", .icon = CUI_ICON_SEARCH,
+                                               .description = "Try another word or category.",
+                                               .action = "Clear filters")) {
                         a->market_query[0] = 0;
                         a->market_cat = 0;
                     }
@@ -3872,7 +4688,7 @@ static void remove_dialog(App *a, cui_ctx *ui) {
 enum {
     CMD_ADD, CMD_SEARCH, CMD_PAUSE, CMD_RESUME, CMD_REMOVE, CMD_INFO, CMD_SELECT_ALL,
     CMD_CLEAR, CMD_DOWNLOADS, CMD_STATS, CMD_SCHEDULED, CMD_SIDEBAR, CMD_SETTINGS,
-    CMD_MARKET, CMD_KEYS, CMD_VIM, CMD_ENGINE, CMD_QUIT,
+    CMD_MARKET, CMD_CREATOR, CMD_KEYS, CMD_VIM, CMD_ENGINE, CMD_QUIT,
 };
 
 static int palette_commands(const App *a, cui_command *out, int *ids) {
@@ -3896,6 +4712,7 @@ static int palette_commands(const App *a, cui_command *out, int *ids) {
         "View", "Ctrl B");
     CMD(CMD_SETTINGS, "Settings", CUI_ICON_SETTINGS, "Settings", "Ctrl ,");
     CMD(CMD_MARKET, "Marketplace", CUI_ICON_SHOPPING_CART, "Settings", "");
+    CMD(CMD_CREATOR, "Create theme", CUI_ICON_PALETTE, "Themes", "");
     CMD(CMD_KEYS, "Keyboard shortcuts", CUI_ICON_KEYBOARD, "Settings", "?");
     CMD(CMD_VIM, vim, CUI_ICON_KEYBOARD, "Settings", "");
     CMD(CMD_ENGINE, engine, CUI_ICON_PLAY, "Settings", "");
@@ -3929,6 +4746,7 @@ static void run_command(App *a, int cmd) {
     case CMD_SIDEBAR: a->sidebar_open = !a->sidebar_open; break;
     case CMD_SETTINGS: open_settings(a); break;
     case CMD_MARKET: open_market(a); break;
+    case CMD_CREATOR: open_creator(a); break;
     case CMD_KEYS:
         open_settings(a);
         a->settings_tab = 4;
@@ -4083,7 +4901,7 @@ static void list_keys(App *a, cui_ctx *ui, bool vim) {
 }
 
 static void handle_keys(App *a, cui_ctx *ui) {
-    if (a->show_settings || a->show_market) return;
+    if (a->show_settings || a->show_market || a->show_creator) return;
     if (a->show_add || a->show_schedule || a->show_info || a->show_remove)
         return;
     if (a->show_palette) return;
@@ -4148,7 +4966,7 @@ static void frame(cui_ctx *ui, void *user) {
     apply_typography(a, ui);
     bool mac = mac_chrome(a);
     const GreedTheme *theme = active_theme(a);
-    bool wallpaper = theme->wallpaper && a->wallpaper_tex;
+    bool wallpaper = theme->wallpaper && a->wallpaper.tex;
 
     /* At the root, overlay coordinates are window coordinates, matching the cursor. */
     if (a->drag_active && a->drag_moved) {
@@ -4260,7 +5078,7 @@ static void frame(cui_ctx *ui, void *user) {
     if (wallpaper) {
         /* Drawn before the node tree, so it sits under every panel. */
         cui_vec2 vp = cui_viewport_size(ui);
-        WallpaperPaint wp = {a->wallpaper_tex, a->wallpaper_w, a->wallpaper_h};
+        WallpaperPaint wp = {a->wallpaper.tex, a->wallpaper.w, a->wallpaper.h};
         paint_wallpaper(ui, (cui_rect){0, 0, vp.x, vp.y}, &wp);
         cui_draw_rect(ui, (cui_rect){0, 0, vp.x, vp.y}, CUI_CORNERS(0),
                       cui_alpha(CUI_RGB(theme->bg), theme->wallpaper_scrim));
@@ -4325,6 +5143,9 @@ static void frame(cui_ctx *ui, void *user) {
     schedule_dialog(a, ui);
     settings_dialog(a, ui);
     market_dialog(a, ui);
+    creator_dialog(a, ui);
+    creator_file_picker(a, ui);
+    creator_discard_dialog(a, ui);
     info_tick(a, ui);
     info_dialog(a, ui);
     remove_dialog(a, ui);
@@ -4388,6 +5209,11 @@ int ui_run(const char *initial_links) {
         a->settings_tab = 5;
     } else if (demo && !strcmp(demo, "palette")) a->show_palette = true;
     else if (demo && !strcmp(demo, "market")) open_market(a);
+    else if (demo && !strcmp(demo, "creator")) open_creator(a);
+    else if (demo && !strcmp(demo, "creator-wallpaper")) {
+        open_creator(a);
+        a->creator_tab = 1;
+    }
     else if (demo && !strcmp(demo, "details")) a->demo_details = true;
     else if (demo && !strcmp(demo, "selection")) a->demo_selection = true;
     else if (demo && !strcmp(demo, "range")) a->demo_range = true;

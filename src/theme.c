@@ -3,7 +3,9 @@
 
 #include "config.h"
 
+#include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <json-c/json.h>
 #include <limits.h>
 #include <math.h>
@@ -11,6 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 const GreedTheme greed_themes[] = {
     {"Dark Mono", true, 0x0a0a0a, 0x101010, 0x171717, 0x0d0d0d, 0xfafafa, 0xa3a3a3,
@@ -298,10 +302,13 @@ static void load_theme_file(const char *path) {
     const char *wallpaper = jstr(root, "wallpaper");
     t.wallpaper_scrim = (float)jdouble(root, "wallpaper_scrim", 0.65);
     t.surface_alpha = (float)jdouble(root, "surface_alpha", 0.84);
+    t.wallpaper_blur = (float)jdouble(root, "wallpaper_blur", 0);
     if (t.wallpaper_scrim < 0) t.wallpaper_scrim = 0;
     if (t.wallpaper_scrim > 1) t.wallpaper_scrim = 1;
     if (t.surface_alpha <= 0) t.surface_alpha = 1;
     if (t.surface_alpha > 1) t.surface_alpha = 1;
+    if (t.wallpaper_blur < 0) t.wallpaper_blur = 0;
+    if (t.wallpaper_blur > 1) t.wallpaper_blur = 1;
     if (wallpaper && wallpaper[0]) {
         char *out = external_wallpapers[external_count];
         if (wallpaper[0] == '/') {
@@ -484,8 +491,9 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
     if (text_scale > 1.30f) text_scale = 1.30f;
     if (spacing < 0.9f) spacing = 0.9f;
     if (spacing > 1.12f) spacing = 1.12f;
-    if (t != last) {
-        cui_set_theme(ui, t->dark ? CUI_THEME_DARK : CUI_THEME_LIGHT);
+    cui_theme_mode mode = t->dark ? CUI_THEME_DARK : CUI_THEME_LIGHT;
+    if (t != last || cui_get_theme_mode(ui) != mode) {
+        cui_set_theme(ui, mode);
         last = t;
     }
     cui_theme *th = cui_theme_get(ui);
@@ -608,4 +616,188 @@ void greed_theme_apply(cui_ctx *ui, const GreedTheme *t, float motion_speed, flo
         th->shadow_floating[0] = (cui_shadow){14, 36, -4, 0.40f};
         th->shadow_floating[1] = (cui_shadow){1, 3, 0, 0.24f};
     }
+}
+
+void greed_theme_slug(const char *name, char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    size_t n = 0;
+    bool dash = false;
+    for (const char *p = name ? name : ""; *p && n + 1 < cap; p++) {
+        unsigned char c = (unsigned char)*p;
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+            if (dash && n) out[n++] = '-';
+            dash = false;
+            out[n++] = (char)tolower(c);
+        } else if (n) {
+            dash = true;
+        }
+    }
+    out[n] = 0;
+    if (!n) snprintf(out, cap, "theme");
+}
+
+static void json_color(struct json_object *o, const char *key, uint32_t v) {
+    char buf[8];
+    snprintf(buf, sizeof buf, "#%06x", (unsigned)(v & 0xffffffu));
+    json_object_object_add(o, key, json_object_new_string(buf));
+}
+
+char *greed_theme_json(const GreedThemeDraft *d, const char *wallpaper_name) {
+    if (!d) return NULL;
+    struct json_object *o = json_object_new_object();
+    json_object_object_add(o, "name", json_object_new_string(d->name));
+    if (d->author[0]) json_object_object_add(o, "author", json_object_new_string(d->author));
+    if (d->summary[0]) json_object_object_add(o, "summary", json_object_new_string(d->summary));
+    if (d->description[0])
+        json_object_object_add(o, "description", json_object_new_string(d->description));
+    if (d->license[0]) json_object_object_add(o, "license", json_object_new_string(d->license));
+    json_object_object_add(o, "dark", json_object_new_boolean(d->theme.dark));
+    if (d->theme.chrome == GREED_CHROME_MACOS)
+        json_object_object_add(o, "chrome", json_object_new_string("macos"));
+    if (d->theme.material == GREED_MATERIAL_GLASS) {
+        json_object_object_add(o, "material", json_object_new_string("glass"));
+        struct json_object *glass = json_object_new_object();
+        json_color(glass, "tint", d->theme.glass_tint);
+        json_object_object_add(glass, "tint_alpha",
+                               json_object_new_double(d->theme.glass_tint_alpha));
+        json_color(glass, "highlight", d->theme.glass_highlight);
+        json_object_object_add(glass, "highlight_alpha",
+                               json_object_new_double(d->theme.glass_highlight_alpha));
+        json_object_object_add(glass, "shadow_alpha",
+                               json_object_new_double(d->theme.glass_shadow_alpha));
+        json_object_object_add(o, "glass", glass);
+    }
+    json_color(o, "bg", d->theme.bg);
+    json_color(o, "surface", d->theme.surface);
+    json_color(o, "raised", d->theme.raised);
+    json_color(o, "muted", d->theme.muted);
+    json_color(o, "text", d->theme.text);
+    json_color(o, "dim", d->theme.dim);
+    json_color(o, "border", d->theme.border);
+    json_color(o, "accent", d->theme.accent);
+    json_color(o, "accent_strong", d->theme.accent_strong);
+    json_color(o, "accent_fg", d->theme.accent_fg);
+    json_color(o, "danger", d->theme.danger);
+    json_color(o, "success", d->theme.success);
+    json_color(o, "warning", d->theme.warning);
+    json_color(o, "info", d->theme.info);
+    struct json_object *series = json_object_new_array();
+    for (int i = 0; i < 6; i++) {
+        char buf[8];
+        snprintf(buf, sizeof buf, "#%06x", (unsigned)(d->theme.series[i] & 0xffffffu));
+        json_object_array_add(series, json_object_new_string(buf));
+    }
+    json_object_object_add(o, "series", series);
+    if (wallpaper_name && wallpaper_name[0]) {
+        json_object_object_add(o, "wallpaper", json_object_new_string(wallpaper_name));
+        json_object_object_add(o, "wallpaper_scrim",
+                               json_object_new_double(d->theme.wallpaper_scrim));
+        json_object_object_add(o, "wallpaper_blur",
+                               json_object_new_double(d->theme.wallpaper_blur));
+        json_object_object_add(o, "surface_alpha",
+                               json_object_new_double(d->theme.surface_alpha));
+    }
+    char *text = strdup(json_object_to_json_string_ext(o, JSON_C_TO_STRING_PRETTY));
+    json_object_put(o);
+    return text;
+}
+
+bool greed_theme_copy_file(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb");
+    if (!in) return false;
+    char tmp[PATH_MAX];
+    snprintf(tmp, sizeof tmp, "%s.tmp-XXXXXX", dst);
+    int fd = mkstemp(tmp);
+    if (fd < 0) {
+        fclose(in);
+        return false;
+    }
+    FILE *out = fdopen(fd, "wb");
+    bool ok = out != NULL;
+    if (!out) close(fd);
+    char buf[65536];
+    while (ok) {
+        size_t n = fread(buf, 1, sizeof buf, in);
+        if (n == 0) break;
+        if (fwrite(buf, 1, n, out) != n) ok = false;
+    }
+    if (ok && (fflush(out) != 0 || ferror(out))) ok = false;
+    if (out && fclose(out) != 0) ok = false;
+    fclose(in);
+    if (ok) {
+        chmod(tmp, 0644);
+        if (rename(tmp, dst) == 0) return true;
+    }
+    unlink(tmp);
+    return false;
+}
+
+static bool theme_name_valid(const char *name) {
+    size_t n = strlen(name);
+    if (n == 0 || n > 48) return false;
+    for (size_t i = 0; i < n; i++)
+        if (iscntrl((unsigned char)name[i])) return false;
+    return true;
+}
+
+bool greed_theme_save(const GreedThemeDraft *d, bool replace, char *out_path, size_t cap,
+                      char *err, size_t errcap) {
+    if (!d || !theme_name_valid(d->name)) {
+        snprintf(err, errcap, "Give the theme a name without control characters.");
+        return false;
+    }
+    for (int i = 0; i < greed_theme_count; i++) {
+        if (!strcmp(greed_themes[i].name, d->name)) {
+            snprintf(err, errcap, "That name belongs to a built-in theme.");
+            return false;
+        }
+    }
+    char slug[64];
+    greed_theme_slug(d->name, slug, sizeof slug);
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof dir, "%s/themes", data_dir());
+    mkdir(data_dir(), 0755);
+    mkdir(dir, 0755);
+
+    char path[PATH_MAX];
+    snprintf(path, sizeof path, "%s/%s.json", dir, slug);
+    if (!replace && access(path, F_OK) == 0) {
+        snprintf(err, errcap, "A saved theme already uses that name. Replace it instead.");
+        return false;
+    }
+
+    char wp_name[128] = "";
+    if (d->wallpaper_src[0]) {
+        const char *ext = !strcasecmp(d->wallpaper_ext, "png") ? "png" : "jpg";
+        snprintf(wp_name, sizeof wp_name, "%s.%s", slug, ext);
+        char wp_path[PATH_MAX];
+        snprintf(wp_path, sizeof wp_path, "%s/%s", dir, wp_name);
+        if (!greed_theme_copy_file(d->wallpaper_src, wp_path)) {
+            snprintf(err, errcap, "Could not copy the wallpaper into the theme folder.");
+            return false;
+        }
+        char old[PATH_MAX];
+        snprintf(old, sizeof old, "%s/%s.%s", dir, slug, !strcmp(ext, "jpg") ? "png" : "jpg");
+        unlink(old);
+    } else {
+        char old[PATH_MAX];
+        snprintf(old, sizeof old, "%s/%s.jpg", dir, slug);
+        unlink(old);
+        snprintf(old, sizeof old, "%s/%s.png", dir, slug);
+        unlink(old);
+    }
+
+    char *json = greed_theme_json(d, wp_name);
+    if (!json) {
+        snprintf(err, errcap, "Could not build the theme file.");
+        return false;
+    }
+    bool ok = file_write_atomic(path, json);
+    free(json);
+    if (!ok) {
+        snprintf(err, errcap, "Could not write the theme file. Check your disk space.");
+        return false;
+    }
+    if (out_path && cap) snprintf(out_path, cap, "%s", path);
+    return true;
 }

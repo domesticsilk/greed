@@ -70,6 +70,8 @@ runtime in between.
 - Frameless window with an internal title bar for dragging, minimizing, maximizing and resizing;
   the minimum window size is 640x420
 - 76 built-in themes, with Dark Mono as the default, plus marketplace theme packs
+- Theme creator with a live preview, wallpaper blur, local save and a Community submission
+  bundle; the Marketplace Community tab lists reviewed themes
 - Optional Liquid Glass theme with light and dark variants, a unified toolbar, traffic lights and
   optical glass on the toolbar, sidebar and dialogs
 - Sidebar tabs for All, Active, Waiting, Stopped and Complete
@@ -375,9 +377,18 @@ built-in copy when the network or the catalog is unavailable.
   Liquid Glass uses both. macOS chrome also prefers SF Pro Text/Display, then Inter, when `font`
   is `default`.
 - A theme may also set `wallpaper` (a filename next to the theme JSON), `wallpaper_scrim` (0 to
-  1, how strongly the background colour covers the image; default 0.65) and `surface_alpha`
-  (0 to 1, panel opacity; default 0.84). The image is cover-cropped behind the interface, and
-  text colours are checked against the scrimmed worst case. Ado and Echidna use this.
+  1, how strongly the background colour covers the image; default 0.65), `wallpaper_blur` (0 to
+  1, how much the image is softened; default 0) and `surface_alpha` (0 to 1, panel opacity;
+  default 0.84). The image is cover-cropped behind the interface, and text colours are checked
+  against the scrimmed worst case. Ado and Echidna use this.
+- The Theme creator previews the draft on the real interface. It edits the palette, a wallpaper,
+  blur, scrim, panel opacity, name, author, summary and license, then saves to `themes/` or
+  exports a submission folder with the theme JSON, wallpaper, `catalog-entry.json` and
+  `README.txt`. There is no account, token or backend; the Publish tab copies the catalog entry
+  and opens a prefilled GitHub issue.
+- The Marketplace Community tab lists catalog items marked `"community": true`. Accepted creator
+  submissions join the same catalog as the official themes. The format and review steps are in
+  `docs/community-themes.md`.
 
 `marketplace/catalog.json` documents the catalog format: each item has an `id`, a `type`
 (`engine`, `tool` or `theme`), a version, an asset URL, a SHA-256 and an optional preview
@@ -465,8 +476,11 @@ src/update.c      in-app updates
 src/browser.c     browser helper registration and message parsing
 src/native.c      Chromium native messaging host
 src/theme.c       built-in themes and theme JSON loading
+src/image_info.c  PNG and JPEG header validation
+src/wallpaper.c   wallpaper decode, downscale and blur cache
 src/logo.h        title bar wordmark alpha mask (generated asset)
 tests/            link, history and contrast checks
+docs/             community theme format and submission guide
 extension/        Chromium extension (Manifest V3)
 marketplace/      catalog and theme pack assets
 vendor/cui/       CUI 1.4.0 amalgamation (MIT)

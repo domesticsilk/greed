@@ -32180,7 +32180,7 @@ static cui_hex_result cui__hex_view_ex_body(cui_ctx *ui, const char *id_str, con
 #define STBI_ONLY_GIF
 #define STBI_ONLY_TGA
 #endif
-#define STB_IMAGE_STATIC
+/* Greed links this decoder for wallpaper blur; keep it external. */
 #define STB_IMAGE_IMPLEMENTATION
 #if defined(__GNUC__) || defined(__clang__)
 /* stb_image declares stbi_load_gif_from_memory even with GIF off; that warning
