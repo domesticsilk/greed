@@ -115,6 +115,7 @@ void config_defaults(Config *c) {
     c->clipboard_monitor = true;
     c->notify_on_complete = true;
     c->verify_after_complete = true;
+    c->animations = true;
     c->motion_speed = 1.0f;
     snprintf(c->theme, sizeof c->theme, "Dark Mono");
     snprintf(c->font, sizeof c->font, "default");
@@ -188,6 +189,7 @@ void config_load(Config *c) {
             c->notify_on_complete = jbool(v, "notify_on_complete", c->notify_on_complete);
             c->verify_after_complete =
                 jbool(v, "verify_after_complete", c->verify_after_complete);
+            c->animations = jbool(v, "animations", c->animations);
             c->motion_speed = (float)jdouble(v, "motion_speed", c->motion_speed);
             if (c->motion_speed < 0.5f) c->motion_speed = 0.5f;
             if (c->motion_speed > 2.0f) c->motion_speed = 2.0f;
@@ -271,6 +273,7 @@ bool config_save(const Config *c) {
     json_object_object_add(v, "notify_on_complete", json_object_new_boolean(c->notify_on_complete));
     json_object_object_add(v, "verify_after_complete",
                            json_object_new_boolean(c->verify_after_complete));
+    json_object_object_add(v, "animations", json_object_new_boolean(c->animations));
     json_object_object_add(v, "motion_speed", json_object_new_double(c->motion_speed));
     json_object_object_add(v, "theme", json_object_new_string(c->theme));
     json_object_object_add(v, "font", json_object_new_string(c->font));

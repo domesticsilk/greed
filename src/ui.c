@@ -80,9 +80,13 @@ typedef struct {
     char filter[128];
     bool focus_search;
     char selected[32];
+    char details_gid[32];      /* last shown item, so the pane can animate closed */
     /* Multi-selection: every action button works on the whole set. */
     char sel[256][32];
     int sel_count;
+    /* Snapshot for the selection panel while it slides shut. */
+    char panel_gid[256][32];
+    int panel_count;
     bool drag_active, drag_moved, drag_add;
     double drag_x, drag_y;
     char drag_base[256][32];
@@ -174,6 +178,8 @@ typedef struct {
     GreedFrame frame;
     bool frame_ready;
     bool demo_details;
+    bool demo_selection;
+    bool demo_settings_scroll;
     float hist_down[HIST];
     float hist_up[HIST];
     char hist_text[HIST][16];
@@ -333,6 +339,8 @@ static float sidebar_width(App *a) {
 static void apply_theme(cui_ctx *ui, App *a) {
     Config *c = active_cfg(a);
     greed_theme_apply(ui, greed_theme_find(c->theme), c->motion_speed, c->text_scale, c->spacing);
+    /* CUI's springs and tweens snap when the motion token is zero. */
+    if (!c->animations) cui_theme_get(ui)->motion = 0.0f;
 }
 
 static void apply_theme_name(App *a, const char *name) {
@@ -1636,11 +1644,13 @@ static void kv(cui_ctx *ui, const char *key, const char *value) {
 
 static void details(App *a, cui_ctx *ui) {
     Download *d = find_item(a, a->selected);
-    if (!d) a->details_open = false;
-    bool show = a->view == VIEW_DOWNLOADS && a->details_open && d;
+    if (d) snprintf(a->details_gid, sizeof a->details_gid, "%s", d->gid);
+    else d = find_item(a, a->details_gid);
+    bool show = a->view == VIEW_DOWNLOADS && a->details_open && a->selected[0] && d &&
+                a->sel_count <= 1;
     float width = cui_animate_spring(ui, cui_make_id(ui, "details-width"),
                                      show ? 290.0f : 0.0f, 0.24f, 0.0f);
-    if (width <= 0.5f || !show) return;
+    if (width <= 0.5f || !d) return;
     /* Fade with the width so the clipped labels do not flash while closing. */
     float opacity = width / 290.0f;
     if (opacity > 1.0f) opacity = 1.0f;
@@ -1651,11 +1661,6 @@ static void details(App *a, cui_ctx *ui) {
         cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
             cui_text(ui, "DETAILS", .size = 11, .font = CUI_FONT_MEDIUM,
                      .color = CUI_COLOR_TEXT_MUTED);
-            if (a->sel_count > 1) {
-                char badge[24];
-                snprintf(badge, sizeof badge, "%d selected", a->sel_count);
-                cui_badge(ui, badge, .tone = CUI_TONE_ACCENT);
-            }
             cui_spacer(ui);
             if (cui_icon_button(ui, CUI_ICON_X, .size = CUI_SIZE_SM, .tooltip = "Close details"))
                 a->details_open = false;
@@ -1765,6 +1770,78 @@ static void details(App *a, cui_ctx *ui) {
     }
 }
 
+static void selection_panel(App *a, cui_ctx *ui) {
+    bool want = a->view == VIEW_DOWNLOADS && a->sel_count > 1;
+    if (want) {
+        a->panel_count = a->sel_count;
+        memcpy(a->panel_gid, a->sel, (size_t)a->panel_count * sizeof a->sel[0]);
+    }
+    float h = cui_animate_spring(ui, cui_make_id(ui, "selection-panel"),
+                                 want ? 148.0f : 0.0f, 0.26f, 0.0f);
+    if (h <= 0.5f) return;
+    float opacity = h / 148.0f;
+    if (opacity > 1.0f) opacity = 1.0f;
+    cui_column(ui, .width = CUI_FILL, .height = CUI_PX(h), .bg = CUI_COLOR_SURFACE_RAISED,
+               .border = 1, .border_color = CUI_COLOR_BORDER, .pad_x = 12, .pad_y = 8,
+               .gap = 8, .clip = true, .opacity = opacity) {
+        cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER, .gap = 6) {
+            char label[48];
+            snprintf(label, sizeof label, "%d selected", a->panel_count);
+            cui_text(ui, label, .size = 12, .font = CUI_FONT_MEDIUM,
+                     .color = CUI_COLOR_ACCENT);
+            cui_spacer(ui);
+            if (cui_icon_button(ui, CUI_ICON_PAUSE, .size = CUI_SIZE_SM, .tooltip = "Pause all",
+                                .disabled = !selection_can_pause(a)))
+                pause_selection(a);
+            if (cui_icon_button(ui, CUI_ICON_PLAY, .size = CUI_SIZE_SM, .tooltip = "Resume all",
+                                .disabled = !selection_can_resume(a)))
+                resume_selection(a);
+            if (cui_icon_button(ui, CUI_ICON_TRASH_2, .size = CUI_SIZE_SM,
+                                .tooltip = "Remove selected"))
+                request_remove(a);
+            if (cui_icon_button(ui, CUI_ICON_X, .size = CUI_SIZE_SM,
+                                .tooltip = "Clear selection")) {
+                selection_clear(a);
+                a->details_open = false;
+            }
+        }
+        cui_scroll(ui, .id = "selection-cards", .width = CUI_FILL, .height = CUI_PX(84),
+                   .horizontal = true, .gap = 10, .fade_edges = true,
+                   .fade_color = CUI_COLOR_SURFACE_RAISED) {
+            cui_row(ui, .width = CUI_FIT, .height = CUI_FILL, .gap = 10) {
+                const char *drop = NULL;
+                for (int i = 0; i < a->panel_count; i++) {
+                    Download *d = find_item(a, a->panel_gid[i]);
+                    if (!d) continue;
+                    cui_card(ui, .id = a->panel_gid[i], .width = CUI_PX(230),
+                             .height = CUI_FILL, .pad = 10, .gap = 6, .hoverable = false) {
+                        cui_row(ui, .width = CUI_FILL, .gap = 6, .align = CUI_ALIGN_CENTER) {
+                            cui_box(ui, .width = CUI_PX(8), .height = CUI_PX(8), .radius = 4,
+                                    .bg = status_color(d));
+                            cui_text(ui, d->name, .size = 12, .font = CUI_FONT_MEDIUM,
+                                     .width = CUI_FILL, .nowrap = true);
+                            if (cui_icon_button(ui, CUI_ICON_X, .size = CUI_SIZE_SM,
+                                                .tooltip = "Deselect"))
+                                drop = a->panel_gid[i];
+                        }
+                        cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
+                            cui_badge(ui, download_status_label(d), .tone = status_tone(d));
+                            cui_spacer(ui);
+                            char pct[16];
+                            snprintf(pct, sizeof pct, "%.0f%%", download_progress(d) * 100.0);
+                            cui_text(ui, pct, .size = 11, .color = CUI_COLOR_TEXT_MUTED,
+                                     .tabular = true);
+                        }
+                        cui_progress(ui, (float)download_progress(d), .height = 4,
+                                     .tone = status_tone(d));
+                    }
+                }
+                if (drop) selection_remove(a, drop);
+            }
+        }
+    }
+}
+
 static unsigned hash_text(const char *s) {
     unsigned h = 2166136261u;
     for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u;
@@ -1773,6 +1850,7 @@ static unsigned hash_text(const char *s) {
 
 /* Filter changes bump row_gen, so every surviving row fades in again. */
 static float row_fade(App *a, const char *gid, float step) {
+    if (!active_cfg(a)->animations) return 1.0f;
     int slot = -1;
     for (int i = 0; i < a->fade_count; i++) {
         if (strcmp(a->fade[i].gid, gid)) continue;
@@ -2403,8 +2481,12 @@ static void content(App *a, cui_ctx *ui) {
         a->page_key = page;
         a->page_fade = 0.0f;
     }
-    float speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
-    a->page_fade += (1.0f - a->page_fade) * (1.0f - expf(-cui_delta_time(ui) * 14.0f * speed));
+    Config *c = active_cfg(a);
+    if (c->animations)
+        a->page_fade +=
+            (1.0f - a->page_fade) * (1.0f - expf(-cui_delta_time(ui) * 14.0f * c->motion_speed));
+    else
+        a->page_fade = 1.0f;
     float page_opacity = a->page_fade > 0.999f ? 0.0f : (a->page_fade > 0.001f ? a->page_fade : 0.001f);
     if (a->view == VIEW_STATS) {
         stats_page(a, ui, page_opacity);
@@ -2880,6 +2962,7 @@ static void settings_dialog(App *a, cui_ctx *ui) {
             cui_scroll_to(ui, "settings-body", 0);
             a->settings_seen_tab = a->settings_tab;
         }
+        if (a->demo_settings_scroll) cui_scroll_to(ui, "settings-body", 1e6f);
         /* Scroll id is hashed inside the dialog scope, so it must be moved here. */
         if (!cui_wants_keyboard(ui)) {
             float page = body_h * 0.75f;
@@ -2931,9 +3014,12 @@ static void settings_dialog(App *a, cui_ctx *ui) {
                                "Record a SHA-256 baseline and check it after every download.");
 
                 cui_heading(ui, "Interface", 4);
+                cui_switch(ui, "Animations", &a->edit.animations,
+                           .description = "Panel, menu and page transitions.");
                 float speed = a->edit.motion_speed;
                 if (cui_slider(ui, "Animation speed", &speed, 0.5f, 2.0f, .step = 0.1f,
-                               .show_value = true, .format = "%.1fx", .width = CUI_FILL))
+                               .show_value = true, .format = "%.1fx", .width = CUI_FILL,
+                               .disabled = !a->edit.animations))
                     a->edit.motion_speed = speed;
                 cui_muted(ui, "How fast panels and menus settle. Applies immediately.");
             } else if (a->settings_tab == 1) {
@@ -4050,8 +4136,16 @@ static void frame(cui_ctx *ui, void *user) {
         }
     }
     /* Screenshot/test hook: GREED_DEMO=details selects the first download. */
-    if (a->demo_details && !a->selected[0] && a->count)
+    if (a->demo_details && !a->selected[0] && a->count) {
         snprintf(a->selected, sizeof a->selected, "%s", a->items[0].gid);
+        a->details_open = true;
+    }
+    if (a->demo_selection && a->count >= 3 && a->sel_count < 3) {
+        a->sel_count = 0;
+        for (int i = 0; i < 3; i++) selection_add(a, a->items[i].gid);
+        snprintf(a->selected, sizeof a->selected, "%s", a->items[0].gid);
+        a->details_open = true;
+    }
     poll_clipboard(a, ui);
     cui_request_wakeup(ui, 0.8f);
     /* Our fades and the drag band are not CUI tweens, so keep frames coming. */
@@ -4099,14 +4193,19 @@ static void frame(cui_ctx *ui, void *user) {
                 }
                 sidebar(a, ui, ratio * vw);
                 cui_split_next(ui);
-                content(a, ui);
-                details(a, ui);
+                cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_STRETCH) {
+                    content(a, ui);
+                    details(a, ui);
+                }
                 cui_split_end(ui);
             } else {
-                content(a, ui);
-                details(a, ui);
+                cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_STRETCH) {
+                    content(a, ui);
+                    details(a, ui);
+                }
             }
         }
+        selection_panel(a, ui);
         if (!mac) cui_separator(ui);
         statusbar(a, ui);
     }
@@ -4152,7 +4251,7 @@ int ui_run(const char *initial_links) {
     ytdlp_init(&a->ytdlp);
     a->sched_count = config_schedules_load(a->sched, GREED_MAX_SCHEDULED);
 
-    /* Test hook for screenshots: GREED_DEMO=add|add-headers|settings|settings-bandwidth|settings-torrents|details|stats|empty */
+    /* Test hook for screenshots: GREED_DEMO=add|add-headers|settings|settings-bandwidth|settings-torrents|settings-interface|details|selection|stats|empty */
     const char *demo = getenv("GREED_DEMO");
     if (demo && !strcmp(demo, "add")) open_add(a);
     else if (demo && !strcmp(demo, "add-headers")) {
@@ -4182,6 +4281,11 @@ int ui_run(const char *initial_links) {
     } else if (demo && !strcmp(demo, "palette")) a->show_palette = true;
     else if (demo && !strcmp(demo, "market")) open_market(a);
     else if (demo && !strcmp(demo, "details")) a->demo_details = true;
+    else if (demo && !strcmp(demo, "selection")) a->demo_selection = true;
+    else if (demo && !strcmp(demo, "settings-interface")) {
+        a->show_settings = true;
+        a->demo_settings_scroll = true;
+    }
     else if (demo && !strcmp(demo, "stats")) a->view = VIEW_STATS;
     else if (demo && !strcmp(demo, "scheduled")) a->view = VIEW_SCHEDULED;
     else if (demo && !strcmp(demo, "scheduled-add")) {

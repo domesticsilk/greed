@@ -38,6 +38,7 @@ typedef struct {
     bool clipboard_monitor;
     bool notify_on_complete;
     bool verify_after_complete;
+    bool animations;           /* panel, menu and page transitions */
     float motion_speed;        /* 1 = normal, higher is faster */
     char theme[48];
     char font[128];            /* default, sans, serif, mono, or an installed family */

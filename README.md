@@ -82,20 +82,22 @@ runtime in between.
   status dot
 - Click a header to sort, drag a divider to resize the column on its right, and use the Columns
   menu to show, hide or reset columns; sort order and widths persist across restarts
-- Details pane with progress, size, speed, ETA, Added time, save location, connections, seeders
-  and files
+- Details pane on the right for the selected download, with progress, size, speed, ETA, Added
+  time, save location, connections, seeders and files
 - Statistics view with a 60-second chart, peak marker, live speeds and a download-folder card
   with free space and an Open folder button
 - Clipboard monitoring and desktop notifications on completion
 - Settings for General, Network, Torrents, Appearance, Keys and Updates, including theme, any
-  installed font, logo style, text size, sidebar width, spacing, motion, engine limits and a
-  keymap diagram
+  installed font, logo style, text size, sidebar width, spacing, motion, an animations switch,
+  engine limits and a keymap diagram
 
 **Workflow**
 
 - Row actions: open a finished file, open its folder, copy the source link or retry a failed
   download
-- Bulk selection by drag band or `Ctrl+click`, then pause, resume or remove in one go
+- Bulk selection by drag band or `Ctrl+click`: two or more downloads open a bottom panel of
+  side-by-side cards, then pause, resume, remove or deselect them one by one; a single selection
+  keeps the details pane on the right
 - Add dialog with a per-download directory, file name and connection count, plus a quality picker
   for video pages
 
