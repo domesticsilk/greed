@@ -117,13 +117,7 @@ void history_flush(void) {
     for (int i = 0; i < entry_count; i++)
         json_object_object_add(v, entries[i].key, json_object_new_int64(entries[i].added));
     const char *text = json_object_to_json_string_ext(v, JSON_C_TO_STRING_PRETTY);
-    FILE *f = fopen(history_path(), "w");
-    bool ok = false;
-    if (f) {
-        ok = fputs(text, f) >= 0;
-        fputc('\n', f);
-        fclose(f);
-    }
+    bool ok = file_write_atomic(history_path(), text);
     json_object_put(v);
     if (ok) dirty = false;
 }

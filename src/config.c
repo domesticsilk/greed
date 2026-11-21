@@ -232,6 +232,28 @@ void config_load(Config *c) {
     config_expand_tilde(c->download_dir);
 }
 
+bool file_write_atomic(const char *path, const char *text) {
+    char tmp[PATH_MAX];
+    int n = snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    if (n < 0 || (size_t)n >= sizeof tmp) return false;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) return false;
+    fchmod(fd, 0600);
+    FILE *f = fdopen(fd, "w");
+    bool ok = f != NULL;
+    if (f) {
+        ok = fputs(text, f) >= 0 && fputc('\n', f) != EOF;
+        if (ok && fflush(f) != 0) ok = false;
+        if (ok && fsync(fileno(f)) != 0) ok = false;
+        if (fclose(f) != 0) ok = false;
+    } else {
+        close(fd);
+    }
+    if (ok && rename(tmp, path) != 0) ok = false;
+    if (!ok) unlink(tmp);
+    return ok;
+}
+
 bool config_save(const Config *c) {
     mkdir(config_dir(), 0755);
     struct json_object *v = json_object_new_object();
@@ -265,19 +287,7 @@ bool config_save(const Config *c) {
         json_object_array_add(widths, json_object_new_int(c->col_width[i]));
     json_object_object_add(v, "col_widths", widths);
     const char *text = json_object_to_json_string_ext(v, JSON_C_TO_STRING_PRETTY);
-    int fd = open(config_path(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    FILE *f = NULL;
-    if (fd >= 0) {
-        fchmod(fd, 0600);
-        f = fdopen(fd, "w");
-        if (!f) close(fd);
-    }
-    bool ok = false;
-    if (f) {
-        ok = fputs(text, f) >= 0;
-        fputc('\n', f);
-        fclose(f);
-    }
+    bool ok = file_write_atomic(config_path(), text);
     json_object_put(v);
     return ok;
 }
@@ -334,13 +344,7 @@ bool config_schedules_save(const GreedScheduled *items, int count) {
         json_object_array_add(arr, o);
     }
     const char *text = json_object_to_json_string_ext(arr, JSON_C_TO_STRING_PRETTY);
-    FILE *f = fopen(schedules_path(), "w");
-    bool ok = false;
-    if (f) {
-        ok = fputs(text, f) >= 0;
-        fputc('\n', f);
-        fclose(f);
-    }
+    bool ok = file_write_atomic(schedules_path(), text);
     json_object_put(arr);
     return ok;
 }

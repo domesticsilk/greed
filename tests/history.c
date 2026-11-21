@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "../src/history.h"
@@ -29,6 +30,12 @@ int main(void) {
     assert(history_added("t:abc", 4000) == 4000);
 
     char path[512];
+    snprintf(path, sizeof path, "%s/greed/history.json", dir);
+    struct stat sb;
+    assert(stat(path, &sb) == 0);
+    assert((sb.st_mode & 0777) == 0600);
+    snprintf(path, sizeof path, "%s/greed/history.json.tmp", dir);
+    assert(access(path, F_OK) != 0);
     snprintf(path, sizeof path, "%s/greed/history.json", dir);
     unlink(path);
     snprintf(path, sizeof path, "%s/greed", dir);

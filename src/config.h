@@ -73,5 +73,8 @@ const char *config_dir(void);
 const char *data_dir(void);
 const char *config_path(void);
 void config_expand_tilde(char *path);
+/* Writes text plus a newline through a temp file and rename, so a crash
+ * leaves the previous file intact. Creates the file with mode 0600. */
+bool file_write_atomic(const char *path, const char *text);
 
 #endif
