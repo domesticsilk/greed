@@ -10,6 +10,8 @@
 - Ado and Echidna join the Marketplace. Ado is a dark stage with electric blue; Echidna is a teal
   night with mint, violet wings and muted gold.
 - Installing a theme with a wallpaper downloads and verifies both files; Remove deletes both.
+- Marketplace theme cards show a small wallpaper thumbnail, downloaded and verified once, then
+  cached under `marketplace/thumbs/`.
 
 ## 0.1.0 - 2026-11-21
 

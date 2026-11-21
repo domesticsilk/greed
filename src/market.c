@@ -108,6 +108,12 @@ static bool asset_name_valid(const char *s) {
     return strcmp(s, ".") && strcmp(s, "..");
 }
 
+bool market_thumb_path(const char *id, char *out, size_t cap) {
+    if (!asset_name_valid(id)) return false;
+    snprintf(out, cap, "%s/thumbs/%s.jpg", market_dir(), id);
+    return access(out, F_OK) == 0;
+}
+
 static void mkdir_p(const char *path) {
     char tmp[PATH_MAX];
     size_t n = strlen(path);
@@ -254,7 +260,7 @@ static bool catalog_parse(const char *text, MarketItem **out, int *count) {
         const char *id = jstr(e, "id");
         const char *type = jstr(e, "type");
         const char *name = jstr(e, "name");
-        if (!id || !id[0] || !type || !name || !name[0] ||
+        if (!id || !id[0] || !asset_name_valid(id) || !type || !name || !name[0] ||
             !json_object_object_get_ex(e, "asset", &asset))
             continue;
         const char *url = jstr(asset, "url");
@@ -315,6 +321,17 @@ static bool catalog_parse(const char *text, MarketItem **out, int *count) {
                 snprintf(it->wallpaper_url, sizeof it->wallpaper_url, "%s", wurl);
                 snprintf(it->wallpaper_sha256, sizeof it->wallpaper_sha256, "%s", wsha);
                 snprintf(it->wallpaper_name, sizeof it->wallpaper_name, "%s", wname);
+            }
+        }
+        struct json_object *thumb = NULL;
+        if (json_object_object_get_ex(e, "thumb", &thumb)) {
+            const char *turl = jstr(thumb, "url");
+            const char *tsha = jstr(thumb, "sha256");
+            long long tsize = jnum(thumb, "size", 0);
+            if (turl && turl[0] && sha_valid(tsha) && tsize > 0 && tsize <= 1024 * 1024) {
+                snprintf(it->thumb_url, sizeof it->thumb_url, "%s", turl);
+                snprintf(it->thumb_sha256, sizeof it->thumb_sha256, "%s", tsha);
+                it->thumb_size = tsize;
             }
         }
         n++;
@@ -387,6 +404,32 @@ static bool http_get(const char *url, Buf *b, long *code, char *err, size_t errc
     return true;
 }
 
+/* Small previews are optional: any failure leaves the palette tile in place. */
+static void cache_thumb(const MarketItem *it) {
+    if (!it->thumb_url[0] || !sha_valid(it->thumb_sha256) || it->thumb_size <= 0) return;
+    char path[PATH_MAX];
+    market_thumb_path(it->id, path, sizeof path);
+    char hex[65];
+    if (access(path, F_OK) == 0) {
+        if (checksum_hash_file(path, hex, sizeof hex) &&
+            !strcasecmp(hex, it->thumb_sha256))
+            return;
+        unlink(path);
+    }
+    Buf b = {0};
+    long code = 0;
+    char err[256];
+    if (!http_get(it->thumb_url, &b, &code, err, sizeof err) ||
+        (long long)b.len != it->thumb_size) {
+        free(b.data);
+        return;
+    }
+    if (write_file_atomic(path, b.data, b.len) &&
+        (!checksum_hash_file(path, hex, sizeof hex) || strcasecmp(hex, it->thumb_sha256)))
+        unlink(path);
+    free(b.data);
+}
+
 static void *fetch_worker(void *arg) {
     Market *m = arg;
     Buf b = {0};
@@ -399,6 +442,7 @@ static void *fetch_worker(void *arg) {
         int count = 0;
         if (catalog_parse(b.data, &items, &count)) {
             write_file_atomic(cache_path(), b.data, b.len);
+            for (int i = 0; i < count; i++) cache_thumb(&items[i]);
             set_catalog(m, items, count, "");
             pthread_mutex_lock(&m->lock);
             m->fetched_at = (long long)time(NULL);

@@ -31,6 +31,10 @@ typedef struct {
     char wallpaper_url[2048];
     char wallpaper_sha256[65];
     char wallpaper_name[128];
+    /* Optional small wallpaper preview, cached under marketplace/thumbs. */
+    char thumb_url[2048];
+    char thumb_sha256[65];
+    long long thumb_size;
     unsigned preview_bg, preview_surface, preview_accent, preview_text;
 } MarketItem;
 
@@ -80,6 +84,8 @@ bool market_remove(Market *m, int index);
 void market_snapshot(Market *m, MarketView *v);
 int market_installed_version(const MarketView *v, const char *id, char *out, size_t cap);
 bool market_managed(Market *m, const char *id);
+/* Cached marketplace thumbnail for a theme; false when none is cached yet. */
+bool market_thumb_path(const char *id, char *out, size_t cap);
 const char *market_tool_path(const char *id, const char *exec);
 bool market_tool_available(const char *id);
 

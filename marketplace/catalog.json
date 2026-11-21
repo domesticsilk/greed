@@ -192,6 +192,11 @@
         "name": "ado.jpg",
         "size": 418564
       },
+      "thumb": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/ado-thumb.jpg",
+        "sha256": "e23f563dd151321da5386ece2e627ad5a26964fb4afc4327fda18803f2d1214b",
+        "size": 25274
+      },
       "preview": {
         "bg": "#05071a",
         "surface": "#0b1029",
@@ -218,6 +223,11 @@
         "sha256": "a0b907259921bb509bb79068c6d5615f7974aa38236512edeb0e5830ca5e6c7b",
         "name": "echidna.jpg",
         "size": 727466
+      },
+      "thumb": {
+        "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/echidna-thumb.jpg",
+        "sha256": "c05a3695ff1b951d4090bae8f9a914a29e143c7cbb3774de29fe99e8b71e699d",
+        "size": 36360
       },
       "preview": {
         "bg": "#071720",

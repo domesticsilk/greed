@@ -382,7 +382,9 @@ built-in copy when the network or the catalog is unavailable.
 `marketplace/catalog.json` documents the catalog format: each item has an `id`, a `type`
 (`engine`, `tool` or `theme`), a version, an asset URL, a SHA-256 and an optional preview
 palette. A theme with a wallpaper adds a `wallpaper` object with its own `url`, `sha256` and
-`name`; the name must be a plain filename, because it is installed next to the theme JSON.
+`name`; the name must be a plain filename, because it is installed next to the theme JSON. It
+can also add a `thumb` object (`url`, `sha256`, `size`) with a small 16:9 preview, which the
+Marketplace card shows after downloading it once into `marketplace/thumbs/`.
 
 ## Configuration
 

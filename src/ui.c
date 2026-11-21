@@ -134,6 +134,12 @@ typedef struct {
     cui_texture wallpaper_tex;
     char wallpaper_path[PATH_MAX];
     int wallpaper_w, wallpaper_h;
+    /* Marketplace theme thumbnails, loaded lazily and kept across redraws. */
+    struct {
+        char id[64];
+        cui_texture tex;
+    } thumbs[12];
+    int thumb_count, thumb_next;
     bool traffic_hover[3];
     char market_query[64];
     int market_cat;
@@ -3227,6 +3233,26 @@ static const char *market_icon(const MarketItem *it) {
     return CUI_ICON_PACKAGE;
 }
 
+/* shortcut: 12 slots cover the wallpaper themes; evict round-robin when the catalog grows. */
+static cui_texture market_thumb(App *a, cui_ctx *ui, const MarketItem *it) {
+    if (!it->thumb_url[0]) return 0;
+    for (int i = 0; i < a->thumb_count; i++)
+        if (!strcmp(a->thumbs[i].id, it->id)) return a->thumbs[i].tex;
+    char path[PATH_MAX];
+    if (!market_thumb_path(it->id, path, sizeof path)) return 0;
+    int w, h;
+    cui_texture tex = cui_image_load(ui, path, &w, &h);
+    if (!tex) return 0;
+    int slot = a->thumb_count < (int)(sizeof a->thumbs / sizeof a->thumbs[0])
+                   ? a->thumb_count++
+                   : a->thumb_next;
+    if (a->thumbs[slot].tex) cui_image_destroy(ui, a->thumbs[slot].tex);
+    a->thumb_next = (slot + 1) % (int)(sizeof a->thumbs / sizeof a->thumbs[0]);
+    snprintf(a->thumbs[slot].id, sizeof a->thumbs[slot].id, "%s", it->id);
+    a->thumbs[slot].tex = tex;
+    return tex;
+}
+
 static cui_texture ytdlp_logo_texture(cui_ctx *ui) {
     static cui_texture tex;
     if (!tex)
@@ -3269,24 +3295,31 @@ static void market_card(App *a, cui_ctx *ui, const MarketItem *it, int index, bo
 
     cui_card(ui, .width = CUI_FILL, .pad = featured ? 18 : 12, .gap = 10, .hoverable = false) {
         cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_CENTER) {
-            cui_box(ui, .width = CUI_PX(featured ? 56 : 40), .height = CUI_PX(featured ? 56 : 40),
-                    .radius = 9,
-                    .bg = it->preview_bg ? CUI_RGB(it->preview_bg)
-                                         : cui_color_of(ui, CUI_COLOR_SURFACE_RAISED),
-                    .border = 1,
-                    .border_color = accent ? CUI_RGB(accent)
-                                           : cui_color_of(ui, CUI_COLOR_BORDER)) {
-                cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_CENTER,
-                        .justify = CUI_JUSTIFY_CENTER) {
-                    cui_texture logo = ytdlp ? ytdlp_logo_texture(ui)
-                                       : ffmpeg ? ffmpeg_logo_texture(ui) : 0;
-                    if (logo) {
-                        float side = featured ? 54 : 38;
-                        cui_image(ui, logo, .width = CUI_PX(side), .height = CUI_PX(side),
-                                  .radius = featured ? 8 : 6);
-                    } else {
-                        cui_icon(ui, market_icon(it), featured ? 24 : 18,
-                                 accent ? CUI_RGB(accent) : CUI_COLOR_ACCENT_STRONG);
+            cui_texture thumb = theme ? market_thumb(a, ui, it) : 0;
+            if (thumb) {
+                float h = featured ? 56 : 40;
+                cui_image(ui, thumb, .width = CUI_PX(h * 16.0f / 9.0f), .height = CUI_PX(h),
+                          .radius = 9);
+            } else {
+                cui_box(ui, .width = CUI_PX(featured ? 56 : 40),
+                        .height = CUI_PX(featured ? 56 : 40), .radius = 9,
+                        .bg = it->preview_bg ? CUI_RGB(it->preview_bg)
+                                             : cui_color_of(ui, CUI_COLOR_SURFACE_RAISED),
+                        .border = 1,
+                        .border_color = accent ? CUI_RGB(accent)
+                                               : cui_color_of(ui, CUI_COLOR_BORDER)) {
+                    cui_row(ui, .width = CUI_FILL, .height = CUI_FILL, .align = CUI_ALIGN_CENTER,
+                            .justify = CUI_JUSTIFY_CENTER) {
+                        cui_texture logo = ytdlp ? ytdlp_logo_texture(ui)
+                                           : ffmpeg ? ffmpeg_logo_texture(ui) : 0;
+                        if (logo) {
+                            float side = featured ? 54 : 38;
+                            cui_image(ui, logo, .width = CUI_PX(side), .height = CUI_PX(side),
+                                      .radius = featured ? 8 : 6);
+                        } else {
+                            cui_icon(ui, market_icon(it), featured ? 24 : 18,
+                                     accent ? CUI_RGB(accent) : CUI_COLOR_ACCENT_STRONG);
+                        }
                     }
                 }
             }
