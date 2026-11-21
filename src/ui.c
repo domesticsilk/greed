@@ -100,7 +100,6 @@ typedef struct {
     int fade_count;
     int page_key;
     float page_fade;
-    float conn_fade;
     bool show_palette;
     bool show_remove;
     int font_pick;
@@ -1516,9 +1515,8 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
     bool mac = mac_chrome(a);
     bool glass = mac_glass(a);
     GlassPaint g = glass_fill(a, ui);
-    /* The bright engine pill is the only thing left visible in a very narrow
-     * panel, so fade the contents out at the end instead of letting it sit
-     * there as a lit sliver after the labels are clipped away. */
+    /* Fade the contents out in a very narrow panel instead of letting them
+     * sit there as a lit sliver after the labels are clipped away. */
     float fade = (width - 70.0f) / 70.0f;
     if (fade > 1.0f) fade = 1.0f;
     if (fade < 0.02f) fade = 0.02f;   /* 0 would mean fully opaque */
@@ -1571,22 +1569,19 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
                     cui_text(ui, num, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY, .tabular = true);
                 }
             }
-            cui_separator(ui);
-            /* Solid status pill; the fill itself fades when the engine comes or goes. */
-            float dt = cui_delta_time(ui);
-            float speed = a->show_settings ? a->edit.motion_speed : a->cfg.motion_speed;
-            float step = 1.0f - expf(-dt * 10.0f * speed);
-            a->conn_fade += ((a->connected ? 1.0f : 0.0f) - a->conn_fade) * step;
-            cui_color engine_bg = cui_mix(cui_color_of(ui, CUI_COLOR_DANGER),
-                                          cui_color_of(ui, CUI_COLOR_SUCCESS), a->conn_fade);
-            engine_bg = cui_mix(engine_bg, cui_color_of(ui, CUI_COLOR_SURFACE), 0.18f);
-            if (cui_button(ui, a->connected ? "aria2 connected" : "aria2 offline",
-                           .variant = CUI_BUTTON_GHOST, .size = CUI_SIZE_SM, .full_width = true,
-                           .background = engine_bg, .color = CUI_COLOR_BACKGROUND)) {
-                if (!a->connected && a->cfg.auto_start_aria2)
-                    aria2_ensure_running(&a->cfg, true);
-                a->last_poll = 0;
-                set_status(a, a->connected ? "Connection refreshed" : "Reconnecting to aria2…");
+            /* Only surface the engine when it is down: a quiet green status
+             * every day would draw the eye for no reason. */
+            if (!a->connected) {
+                cui_separator(ui);
+                if (cui_button(ui, "aria2 offline · Reconnect",
+                               .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM,
+                               .full_width = true, .icon = CUI_ICON_REFRESH_CW,
+                               .color = CUI_COLOR_DANGER,
+                               .tooltip = "Start aria2 and reconnect")) {
+                    if (a->cfg.auto_start_aria2) aria2_ensure_running(&a->cfg, true);
+                    a->last_poll = 0;
+                    set_status(a, "Reconnecting to aria2…");
+                }
             }
         }
     }
@@ -3977,9 +3972,7 @@ static void frame(cui_ctx *ui, void *user) {
     poll_clipboard(a, ui);
     cui_request_wakeup(ui, 0.8f);
     /* Our fades and the drag band are not CUI tweens, so keep frames coming. */
-    bool animating = a->page_fade < 0.999f || a->drag_active ||
-                     (a->sidebar_open &&
-                      fabsf(a->conn_fade - (a->connected ? 1.0f : 0.0f)) > 0.01f);
+    bool animating = a->page_fade < 0.999f || a->drag_active;
     for (int i = 0; i < a->fade_count && !animating; i++)
         if (a->fade[i].v < 0.99f) animating = true;
     if (animating) cui_request_wakeup(ui, 1.0f / 60.0f);
