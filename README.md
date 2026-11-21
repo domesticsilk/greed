@@ -457,7 +457,3 @@ vendor/aria2/     aria2c and libaria2 (GPL-2.0)
 
 GPL-2.0. CUI is MIT-licensed and vendored under `vendor/cui/LICENSE`; aria2 is GPL-2.0 and
 vendored under `vendor/aria2/`.
-
-The title bar wordmark (`src/logo.h`) is a rendered image of the Stitch Warrior demo font, which
-is free for personal use only. The font file itself is not included, and the wordmark is not
-covered by the GPL; replace it if you need a different license.
