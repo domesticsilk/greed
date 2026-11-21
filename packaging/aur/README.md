@@ -4,7 +4,7 @@ The AUR already has an unrelated game named `greed`, so these packages are calle
 `greed-dm` and `greed-dm-git`. Both install the same `greed`
 binary, desktop entry, icon and the browser extension under `/usr/share/greed/extension`.
 
-- `greed-dm` builds the `v0.1.0` tag.
+- `greed-dm` builds the `v0.2.0` tag.
 - `greed-dm-git` builds the current `main`.
 
 ## Test locally
@@ -17,7 +17,7 @@ makepkg -si
 ## Publish
 
 The source must be public before the AUR package can build. Push the repository and the
-`v0.1.0` tag first, then create both AUR repositories and push `PKGBUILD` and `.SRCINFO`:
+`v0.2.0` tag first, then create both AUR repositories and push `PKGBUILD` and `.SRCINFO`:
 
 ```sh
 git clone ssh://aur@aur.archlinux.org/greed-dm.git
