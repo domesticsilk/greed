@@ -1,5 +1,6 @@
 #include "update.h"
 
+#include "checksum.h"
 #include "version.h"
 
 #include <curl/curl.h>
@@ -95,7 +96,7 @@ static void *check_worker(void *arg) {
     }
 
     int stage = UPD_ERROR;
-    char error[512] = {0}, version[64] = {0}, url[2048] = {0};
+    char error[512] = {0}, version[64] = {0}, url[2048] = {0}, sha_url[2048] = {0};
 
     if (rc != CURLE_OK) {
         snprintf(error, sizeof error, "%s", net_error(rc));
@@ -123,12 +124,14 @@ static void *check_worker(void *arg) {
                 for (int i = 0; i < n; i++) {
                     struct json_object *asset = json_object_array_get_idx(assets, i);
                     struct json_object *name = NULL, *link = NULL;
-                    if (!json_object_object_get_ex(asset, "name", &name) ||
-                        strcmp(json_object_get_string(name), ASSET_NAME))
+                    if (!json_object_object_get_ex(asset, "name", &name)) continue;
+                    const char *aname = json_object_get_string(name);
+                    if (!aname || !json_object_object_get_ex(asset, "browser_download_url", &link))
                         continue;
-                    if (json_object_object_get_ex(asset, "browser_download_url", &link))
+                    if (!strcmp(aname, ASSET_NAME))
                         snprintf(url, sizeof url, "%s", json_object_get_string(link));
-                    break;
+                    else if (!strcmp(aname, ASSET_NAME ".sha256"))
+                        snprintf(sha_url, sizeof sha_url, "%s", json_object_get_string(link));
                 }
                 if (!url[0]) snprintf(error, sizeof error, "The latest release has no AppImage.");
                 else stage = UPD_AVAILABLE;
@@ -143,6 +146,7 @@ static void *check_worker(void *arg) {
     u->progress = 0;
     snprintf(u->version, sizeof u->version, "%s", version);
     snprintf(u->url, sizeof u->url, "%s", url);
+    snprintf(u->sha_url, sizeof u->sha_url, "%s", sha_url);
     snprintf(u->error, sizeof u->error, "%s", error);
     pthread_mutex_unlock(&u->lock);
     return NULL;
@@ -177,16 +181,58 @@ static int progress_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_
     return 0;
 }
 
+static bool fetch_text(const char *url, char *out, size_t cap) {
+    Buf b = {0};
+    CURL *c = curl_easy_init();
+    if (!c) return false;
+    curl_easy_setopt(c, CURLOPT_URL, url);
+    curl_easy_setopt(c, CURLOPT_USERAGENT, "greed/" GREED_VERSION);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, buf_write);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &b);
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 60L);
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+    CURLcode rc = curl_easy_perform(c);
+    curl_easy_cleanup(c);
+    bool ok = rc == CURLE_OK && b.data && b.data[0];
+    if (ok) snprintf(out, cap, "%s", b.data);
+    free(b.data);
+    return ok;
+}
+
+/* The .sha256 asset catches a truncated or corrupted transfer. It is not a
+ * signature: a compromised release could carry a matching checksum. */
+static bool verify_sha256(const char *path, const char *url, char *error, size_t cap) {
+    char listing[1024], want[65], got[65];
+    if (!fetch_text(url, listing, sizeof listing) ||
+        !checksum_parse_hex(listing, want, sizeof want)) {
+        snprintf(error, cap, "The release checksum is missing.");
+        return false;
+    }
+    if (!checksum_hash_file(path, got, sizeof got)) {
+        snprintf(error, cap, "Could not verify the download.");
+        return false;
+    }
+    if (strcmp(want, got) != 0) {
+        snprintf(error, cap, "The download failed its checksum.");
+        return false;
+    }
+    return true;
+}
+
 /* The download lands next to the target and is renamed into place, so a failed
  * transfer never leaves a half-written executable.
  * shortcut: the GitHub HTTPS connection is the trust boundary, no signature
  * check; add minisign verification if releases are ever signed. */
 static void *download_worker(void *arg) {
     GreedUpdate *u = arg;
-    char target[PATH_MAX], url[2048];
+    char target[PATH_MAX], url[2048], sha_url[2048];
     pthread_mutex_lock(&u->lock);
     snprintf(target, sizeof target, "%s", u->target);
     snprintf(url, sizeof url, "%s", u->url);
+    snprintf(sha_url, sizeof sha_url, "%s", u->sha_url);
     pthread_mutex_unlock(&u->lock);
 
     char error[512] = {0};
@@ -251,6 +297,8 @@ static void *download_worker(void *arg) {
             } else if (got < sizeof magic || memcmp(magic, "\x7f" "ELF", 4) ||
                        magic[4] != 2 || magic[18] != 0x3E || magic[19] != 0) {
                 snprintf(error, sizeof error, "The downloaded file is not an x86-64 AppImage.");
+            } else if (sha_url[0] && !verify_sha256(tmp, sha_url, error, sizeof error)) {
+                /* error already set */
             } else if (chmod(tmp, 0755) != 0) {
                 snprintf(error, sizeof error, "Could not make the update executable: %s.",
                          strerror(errno));

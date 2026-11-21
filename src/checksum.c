@@ -73,6 +73,19 @@ static bool store_save(struct json_object *v) {
     return ok;
 }
 
+bool checksum_parse_hex(const char *text, char *hex, size_t cap) {
+    if (!text || cap < 65) return false;
+    int k = 0;
+    for (const char *p = text; *p && k < 64; p++) {
+        char ch = *p;
+        if (ch >= 'A' && ch <= 'F') ch = (char)(ch - 'A' + 'a');
+        if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) hex[k++] = ch;
+        else break;
+    }
+    hex[k] = 0;
+    return k == 64;
+}
+
 bool checksum_hash_file(const char *path, char *hex, size_t cap) {
     if (!path || !path[0] || cap < 65) return false;
     int fds[2];
@@ -100,15 +113,8 @@ bool checksum_hash_file(const char *path, char *hex, size_t cap) {
     int st = 0;
     waitpid(pid, &st, 0);
     if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) return false;
-
-    int k = 0;
-    for (size_t i = 0; i < len && k < 64; i++) {
-        char ch = buf[i];
-        if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) hex[k++] = ch;
-        else break;
-    }
-    hex[k] = 0;
-    return k == 64;
+    buf[len] = 0;
+    return checksum_parse_hex(buf, hex, cap);
 }
 
 static void start_next(void) {

@@ -7,6 +7,9 @@
 /* Blocking SHA-256 for installers. False when sha256sum is missing or the file cannot be read. */
 bool checksum_hash_file(const char *path, char *hex, size_t cap);
 
+/* Reads the leading 64 hex digits of a sha256sum-style line; case-insensitive. */
+bool checksum_parse_hex(const char *text, char *hex, size_t cap);
+
 /* Queue a SHA-256 job for path. False when it is already queued/running or the queue is full. */
 bool checksum_queue(const char *path);
 
