@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-20",
+  "updated": "2026-11-21",
   "items": [
     {
       "id": "yt-dlp",
@@ -9,7 +9,7 @@
       "category": "Video",
       "version": "2026.10.26",
       "summary": "Download video and audio from thousands of sites.",
-      "description": "Adds a resolver to the Add dialog. Paste a video page and Greed asks yt-dlp for the best single-file stream, then downloads it with aria2 using the right headers. Single-file streams only for now.",
+      "description": "Adds a resolver to the Add dialog. Paste a video page and Greed asks yt-dlp for the stream at the quality you pick, then downloads it with aria2 using the right headers. Higher qualities download video and audio separately and merge them with ffmpeg.",
       "source": "github.com/yt-dlp/yt-dlp",
       "asset": {
         "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux",
@@ -22,6 +22,28 @@
         "surface": "#1a1b26",
         "accent": "#ff0700",
         "text": "#c0caf5"
+      }
+    },
+    {
+      "id": "ffmpeg",
+      "type": "engine",
+      "name": "FFmpeg",
+      "category": "Video",
+      "version": "6.0",
+      "summary": "Merge separate video and audio streams into one file.",
+      "description": "Adds the ffmpeg binary Greed uses to merge video and audio tracks. Required for YouTube qualities above 360p. Single static build; nothing else is installed.",
+      "source": "github.com/eugeneware/ffmpeg-static",
+      "asset": {
+        "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-x64",
+        "sha256": "ed652b2f32e0851d1946894fb8333f5b677c1b2ce6b9d187910a67f8b99da028",
+        "size": 78683840,
+        "exec": "ffmpeg"
+      },
+      "preview": {
+        "bg": "#111318",
+        "surface": "#171a21",
+        "accent": "#3f9e3f",
+        "text": "#d7dde5"
       }
     },
     {

@@ -1020,7 +1020,13 @@ CUI_API bool cui_alert_ex(cui_ctx *ui, const char *title, const cui_alert_opts *
 
 typedef struct cui_progress_opts { int _; bool indeterminate; cui_tone tone; float height; const char *label; bool show_value; cui_size width; } cui_progress_opts;
 CUI_API void cui_progress_ex(cui_ctx *ui, float value, const cui_progress_opts *opts);
+
+typedef enum cui_spinner_style {
+    CUI_SPINNER_ARC = 0,   /* the default sweeping arc */
+    CUI_SPINNER_ORBIT      /* three dots orbiting with short trails */
+} cui_spinner_style;
 CUI_API void cui_spinner(cui_ctx *ui, float size);
+CUI_API void cui_spinner_ex(cui_ctx *ui, float size, cui_spinner_style style);
 CUI_API void cui_skeleton(cui_ctx *ui, cui_size width, float height);
 
 typedef struct cui_badge_opts {

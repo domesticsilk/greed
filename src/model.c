@@ -99,6 +99,7 @@ const char *download_status_label(const Download *d) {
     if (!strcmp(d->status, "waiting")) return "Queued";
     if (!strcmp(d->status, "paused")) return "Paused";
     if (!strcmp(d->status, "complete")) return "Completed";
+    if (!strcmp(d->status, "merging")) return "Merging";
     if (!strcmp(d->status, "error")) return "Failed";
     if (!strcmp(d->status, "removed")) return "Removed";
     return "Unknown";

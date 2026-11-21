@@ -225,6 +225,8 @@ void cui__draw_check(cui_ctx *ui, cui_rect r, float t, float thickness, cui_colo
 void cui__draw_top_light(cui_ctx *ui, cui_rect r, cui_corners rad, float alpha);
 void cui__draw_sheen(cui_ctx *ui, cui_rect r, cui_corners rad, float k);
 void cui__draw_spinner(cui_ctx *ui, cui_vec2 center, float radius, float thickness, cui_color c);
+void cui__draw_spinner_style(cui_ctx *ui, cui_vec2 center, float radius, float thickness,
+                             cui_color c, cui_spinner_style style);
 void cui__draw_focus_ring(cui_ctx *ui, cui_rect r, cui_corners radius, float alpha);
 void cui__draw_elevation(cui_ctx *ui, cui_rect r, cui_corners radius, cui_elevation e, float alpha);
 /* Raw triangles with per vertex colors (points). */
@@ -18090,6 +18092,36 @@ void cui__draw_spinner(cui_ctx *ui, cui_vec2 c, float radius, float thick, cui_c
     float len = 1.2f + 0.9f * sinf(t * 2.4f);
     cui_draw_arc(ui, c, radius, head, head + len, thick, col);
     ui->animating = true;
+}
+
+/* Three dots chase each other around a faint orbit. Short arcs behind each
+ * dot read as motion even on small sizes. */
+static void cui__draw_orbit_spinner(cui_ctx *ui, cui_vec2 c, float radius, float thick,
+                                    cui_color col) {
+    float t = (float)ui->time;
+    col = cui_color_of(ui, col);
+    float orbit = radius * 0.64f;
+    float dot = CUI_MAX(1.8f, radius * 0.2f);
+    cui_draw_arc(ui, c, orbit, 0, 2 * CUI_PI, CUI_MAX(1.0f, thick * 0.42f),
+                 cui_alpha(col, 0.13f));
+    for (int i = 0; i < 3; i++) {
+        float a = t * 3.6f + (float)i * (2 * CUI_PI / 3);
+        float fade = 1.0f - 0.26f * (float)i;
+        float r = dot * (1.0f - 0.16f * (float)i);
+        cui_draw_arc(ui, c, orbit, a - 0.55f, a, CUI_MAX(1.0f, r * 0.8f),
+                     cui_alpha(col, 0.22f * fade));
+        cui_draw_circle(ui, (cui_vec2){c.x + cosf(a) * orbit, c.y + sinf(a) * orbit}, r,
+                        cui_alpha(col, fade));
+    }
+    ui->animating = true;
+}
+
+void cui__draw_spinner_style(cui_ctx *ui, cui_vec2 c, float radius, float thick, cui_color col,
+                             cui_spinner_style style) {
+    if (style == CUI_SPINNER_ORBIT)
+        cui__draw_orbit_spinner(ui, c, radius, thick, col);
+    else
+        cui__draw_spinner(ui, c, radius, thick, col);
 }
 
 void cui__draw_focus_ring(cui_ctx *ui, cui_rect r, cui_corners rad, float alpha) {
@@ -67742,18 +67774,19 @@ cui__btn_colors cui__button_colors(cui_ctx *ui, cui_button_variant v, bool selec
     return c;
 }
 
-typedef struct { float t; } cui__spin_data;
+typedef struct { cui_color c; cui_spinner_style style; } cui__spin_data;
 static void cui__paint_spinner(cui_ctx *ui, cui_node *n, void *data) {
-    cui_color c = *(cui_color *)data;
+    cui__spin_data *p = data;
     float r = CUI_MIN(n->rect.w, n->rect.h) * 0.5f;
     cui_vec2 ctr = { n->rect.x + n->rect.w * 0.5f, n->rect.y + n->rect.h * 0.5f };
-    cui__draw_spinner(ui, ctr, r - 1.0f, CUI_MAX(1.5f, r * 0.22f), c);
+    cui__draw_spinner_style(ui, ctr, r - 1.0f, CUI_MAX(1.5f, r * 0.22f), p->c, p->style);
 }
 
-static void cui__spinner_node(cui_ctx *ui, float size, cui_color c) {
+static void cui__spinner_node(cui_ctx *ui, float size, cui_color c, cui_spinner_style style) {
     int i = cui__leaf(ui, 0, CUI_PX(size), CUI_PX(size));
-    cui_color *d = cui__frame_alloc(ui, sizeof(cui_color));
-    *d = c;
+    cui__spin_data *d = cui__frame_alloc(ui, sizeof *d);
+    d->c = c;
+    d->style = style;
     ui->nodes[i].paint = cui__paint_spinner;
     ui->nodes[i].paint_data = d;
     ui->nodes[i].self_align = CUI_ALIGN_CENTER;
@@ -67869,7 +67902,7 @@ static bool cui__button_impl(cui_ctx *ui, cui_id id, const char *label, const ch
     if (r.hovered) cui__set_cursor(ui, CUI_CURSOR_HAND);
     if (disabled && ui->hot == id) cui__set_cursor(ui, CUI_CURSOR_NOT_ALLOWED);
     cui__open(ui, i);
-    if (o->loading) cui__spinner_node(ui, icon_size - 2, col.fg);
+    if (o->loading) cui__spinner_node(ui, icon_size - 2, col.fg, CUI_SPINNER_ARC);
     else if (icon_only) cui__icon_node(ui, icon_only, icon_size, col.fg);
     else if (o->icon) cui__icon_swap(ui, id ^ 0x1C05A9u, o->icon, icon_size, col.fg);
     if (!icon_only && label && cui__display_len(label) > 0) {
@@ -68142,7 +68175,11 @@ void cui_card_end(cui_ctx *ui) { cui__close(ui); }
 /* ------------------------------------------------------------------------ */
 
 void cui_spinner(cui_ctx *ui, float size) {
-    cui__spinner_node(ui, size > 0 ? size : 20, CUI_C(ui, TEXT_SECONDARY));
+    cui__spinner_node(ui, size > 0 ? size : 20, CUI_C(ui, TEXT_SECONDARY), CUI_SPINNER_ARC);
+}
+
+void cui_spinner_ex(cui_ctx *ui, float size, cui_spinner_style style) {
+    cui__spinner_node(ui, size > 0 ? size : 20, CUI_C(ui, TEXT_SECONDARY), style);
 }
 
 typedef struct { float value; bool indeterminate; cui_color track, fill; double time; } cui__progress_paint;

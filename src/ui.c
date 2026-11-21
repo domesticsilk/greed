@@ -157,6 +157,7 @@ typedef struct {
     char add_dir[1024];
     char add_name[256];
     int add_conn;
+    int add_quality;
     char status[256];
     double last_poll;
     double next_clip;
@@ -512,7 +513,8 @@ done:
 
 
 static cui_color status_color(const Download *d) {
-    if (!strcmp(d->status, "active")) return CUI_COLOR_ACCENT_STRONG;
+    if (!strcmp(d->status, "active") || !strcmp(d->status, "merging"))
+        return CUI_COLOR_ACCENT_STRONG;
     if (!strcmp(d->status, "complete")) return CUI_COLOR_SUCCESS;
     if (!strcmp(d->status, "paused")) return CUI_COLOR_WARNING;
     if (!strcmp(d->status, "error")) return CUI_COLOR_DANGER;
@@ -520,7 +522,7 @@ static cui_color status_color(const Download *d) {
 }
 
 static cui_tone status_tone(const Download *d) {
-    if (!strcmp(d->status, "active")) return CUI_TONE_ACCENT;
+    if (!strcmp(d->status, "active") || !strcmp(d->status, "merging")) return CUI_TONE_ACCENT;
     if (!strcmp(d->status, "complete")) return CUI_TONE_SUCCESS;
     if (!strcmp(d->status, "paused")) return CUI_TONE_WARNING;
     if (!strcmp(d->status, "error")) return CUI_TONE_DANGER;
@@ -783,9 +785,6 @@ static void poll_engine(App *a) {
         for (size_t i = 0; i < len; i++) {
             Download d;
             if (!download_parse(json_object_array_get_idx(v, i), &d)) continue;
-            char key[HISTORY_KEY_MAX];
-            download_key(&d, key, sizeof key);
-            d.added = history_added(key, (long long)time(NULL));
             if (n == cap) {
                 cap = cap ? cap * 2 : 32;
                 Download *p = realloc(fresh, (size_t)cap * sizeof *fresh);
@@ -804,6 +803,17 @@ static void poll_engine(App *a) {
         return;
     }
     a->connected = true;
+    ytdlp_track(fresh, n, a->rpc.port);
+    int keep = 0;
+    for (int i = 0; i < n; i++) {
+        if (ytdlp_is_audio_part(fresh[i].gid)) continue;
+        char key[HISTORY_KEY_MAX];
+        download_key(&fresh[i], key, sizeof key);
+        fresh[i].added = history_added(key, (long long)time(NULL));
+        if (keep != i) fresh[keep] = fresh[i];
+        keep++;
+    }
+    n = keep;
     remember_statuses(a, fresh, n, a->known_count > 0);
     free(a->items);
     a->items = fresh;
@@ -1088,16 +1098,27 @@ static void open_settings(App *a) {
     a->show_settings = true;
 }
 
+static bool pause_gid(App *a, const char *gid, bool pause) {
+    struct json_object *params = json_object_new_array();
+    json_object_array_add(params, json_object_new_string(gid));
+    struct json_object *v = rpc_call(&a->rpc, pause ? "aria2.pause" : "aria2.unpause", params);
+    if (!v) return false;
+    json_object_put(v);
+    return true;
+}
+
 static void toggle_download(App *a, Download *d) {
     bool paused = !strcmp(d->status, "paused");
-    struct json_object *params = json_object_new_array();
-    json_object_array_add(params, json_object_new_string(d->gid));
-    struct json_object *v = rpc_call(&a->rpc, paused ? "aria2.unpause" : "aria2.pause", params);
-    if (!v) {
-        set_status(a, "Error: %s", a->rpc.error);
+    char audio[32] = {0};
+    bool pair = ytdlp_audio_gid(d->gid, audio, sizeof audio);
+    bool ok = pause_gid(a, d->gid, !paused);
+    char err[512];
+    snprintf(err, sizeof err, "%s", a->rpc.error);
+    if (pair && pause_gid(a, audio, !paused)) ok = true;
+    if (!ok) {
+        set_status(a, "Error: %s", err);
         return;
     }
-    json_object_put(v);
     set_status(a, paused ? "Resumed" : "Paused");
     a->last_poll = 0;
 }
@@ -1109,6 +1130,10 @@ static void toggle_selected(App *a) {
 
 /* aria2 has no retry RPC: drop the failed result and add the source again. */
 static void retry_download(App *a, Download *d) {
+    if (ytdlp_is_video(d->gid)) {
+        set_status(a, "Add the video page again to retry");
+        return;
+    }
     if (!d->url[0]) {
         set_status(a, "This download cannot be retried; add it again");
         return;
@@ -1131,7 +1156,20 @@ static void retry_download(App *a, Download *d) {
     set_status(a, "Retrying %s", name);
 }
 
+static void remove_any_gid(App *a, const char *gid) {
+    struct json_object *params = json_object_new_array();
+    json_object_array_add(params, json_object_new_string(gid));
+    struct json_object *v = rpc_call(&a->rpc, "aria2.forceRemove", params);
+    if (v) json_object_put(v);
+    params = json_object_new_array();
+    json_object_array_add(params, json_object_new_string(gid));
+    v = rpc_call(&a->rpc, "aria2.removeDownloadResult", params);
+    if (v) json_object_put(v);
+}
+
 static void remove_download(App *a, Download *d) {
+    char audio[32] = {0};
+    bool pair = ytdlp_forget(d->gid, audio, sizeof audio);
     struct json_object *params = json_object_new_array();
     json_object_array_add(params, json_object_new_string(d->gid));
     struct json_object *v = rpc_call(&a->rpc, download_is_finished(d) ? "aria2.removeDownloadResult"
@@ -1148,6 +1186,7 @@ static void remove_download(App *a, Download *d) {
         struct json_object *r = rpc_call(&a->rpc, "aria2.removeDownloadResult", purge);
         if (r) json_object_put(r);
     }
+    if (pair) remove_any_gid(a, audio);
     char key[HISTORY_KEY_MAX];
     download_key(d, key, sizeof key);
     history_forget(key);
@@ -1912,8 +1951,13 @@ static void download_table(App *a, cui_ctx *ui) {
                 switch (col_of[c]) {
                 case GREED_COL_NAME:
                     cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-                        cui_box(ui, .width = CUI_PX(8), .height = CUI_PX(8), .radius = 4,
-                                .bg = status_color(d));
+                        bool yt_spin = ytdlp_is_youtube(d->gid) &&
+                                       (!strcmp(d->status, "active") ||
+                                        !strcmp(d->status, "merging"));
+                        if (yt_spin) cui_spinner_ex(ui, 12, CUI_SPINNER_ORBIT);
+                        else
+                            cui_box(ui, .width = CUI_PX(8), .height = CUI_PX(8), .radius = 4,
+                                    .bg = status_color(d));
                         cui_text(ui, d->name, .width = CUI_FILL, .nowrap = true);
                     }
                     break;
@@ -2416,7 +2460,26 @@ static void add_dialog(App *a, cui_ctx *ui) {
                      .height = 104);
         if (ytdlp_available()) {
             cui_switch(ui, "Resolve video pages with yt-dlp", &a->add_ytdlp);
-            cui_muted(ui, "yt-dlp picks the best single-file stream and hands the direct link to aria2.");
+            if (a->add_ytdlp) {
+                cui_label(ui, "Quality");
+                static const char *quality_names[] = {"Best", "1080p", "720p", "480p", "360p"};
+                cui_segmented(ui, "add-quality", quality_names, 5, &a->add_quality,
+                              .size = CUI_SIZE_SM);
+                if (ytdlp_ffmpeg_available()) {
+                    cui_muted(ui, "Higher qualities download video and audio separately, then "
+                                  "merge them with ffmpeg.");
+                } else {
+                    cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                        cui_muted(ui, "Higher qualities need ffmpeg.");
+                        if (cui_button(ui, "Get ffmpeg", .size = CUI_SIZE_SM,
+                                       .variant = CUI_BUTTON_GHOST))
+                            open_market(a);
+                    }
+                }
+            } else {
+                cui_muted(ui, "yt-dlp picks the best single-file stream and hands the direct "
+                              "link to aria2.");
+            }
         } else {
             cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
                 cui_muted(ui, "Video pages need yt-dlp.");
@@ -2472,7 +2535,7 @@ static void add_dialog(App *a, cui_ctx *ui) {
                     if (!a->add_urls[0]) {
                         set_status(a, "Paste a link first");
                     } else if (!ytdlp_start(&a->ytdlp, a->cfg.rpc_port, a->add_urls,
-                                            a->add_dir)) {
+                                            a->add_dir, (YtdlpQuality)a->add_quality)) {
                         set_status(a, "A video task is already running");
                     } else {
                         a->ytdlp_active = true;
@@ -3884,18 +3947,21 @@ static void frame(cui_ctx *ui, void *user) {
         bool running = false;
         int done = 0, total = 0;
         char err[512] = {0};
-        ytdlp_snapshot(&a->ytdlp, &running, &done, &total, err, sizeof err);
+        char note[256] = {0};
+        ytdlp_snapshot(&a->ytdlp, &running, &done, &total, err, sizeof err, note, sizeof note);
         if (!running) {
             a->ytdlp_active = false;
             if (err[0]) set_status(a, "Video links: %s", err);
             else if (done < total)
                 set_status(a, "Added %d of %d video links", done, total);
+            else if (note[0]) set_status(a, "%s", note);
             else set_status(a, "Added %d video link%s", done, done == 1 ? "" : "s");
             a->last_poll = 0;
         } else {
             cui_request_wakeup(ui, 0.5f);
         }
     }
+    if (ytdlp_busy()) cui_request_wakeup(ui, 0.5f);
     if (a->show_market) {
         market_snapshot(&a->market, &a->mkt);
         if (a->mkt.job_stage != a->market_seen_job) {
