@@ -81,6 +81,7 @@ static const char *const browser_dirs[] = {
     "google-chrome-beta",
     "google-chrome-unstable",
     "chromium",
+    "net.imput.helium",
     "BraveSoftware/Brave-Browser",
     "microsoft-edge",
     "vivaldi",
