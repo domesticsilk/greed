@@ -204,26 +204,26 @@
       "type": "theme",
       "name": "Echidna",
       "category": "Theme",
-      "version": "1.0.0",
-      "summary": "Warm parchment, deep violet ink and a trace of muted gold.",
-      "description": "A light theme on warm ivory parchment: deep violet ink, muted gold rings and soft botanical stains. Ships with an original abstract wallpaper and translucent panels, so the paper texture stays visible behind the interface. Installs as a theme you can apply from the marketplace.",
+      "version": "1.1.0",
+      "summary": "A teal night lit by mint hair, violet wings and muted gold.",
+      "description": "A dark teal night: deep stained glass, mint highlights, violet butterflies and muted gold trim. Ships with an original wallpaper and translucent panels, so the art stays visible behind the interface. Installs as a theme you can apply from the marketplace.",
       "source": "greed theme pack",
       "asset": {
         "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/echidna.json",
-        "sha256": "dfa7b32266c657beba114ba6b1840185e421dce6f3c4d5ffb4c64e6ffa7d576e",
-        "size": 554
+        "sha256": "3515c45b27db9d40e10899378d3bd4675e2e4b7296122f30fb9da6d2af24d856",
+        "size": 553
       },
       "wallpaper": {
         "url": "https://raw.githubusercontent.com/domesticsilk/greed/main/marketplace/themes/echidna.jpg",
-        "sha256": "10bd0761c3b6aa585eecd368818b0966b49d994cc0dbf2b9fcf0fd8c3238336e",
+        "sha256": "a0b907259921bb509bb79068c6d5615f7974aa38236512edeb0e5830ca5e6c7b",
         "name": "echidna.jpg",
-        "size": 47647
+        "size": 727466
       },
       "preview": {
-        "bg": "#f6f0e3",
-        "surface": "#fffcf3",
-        "accent": "#5b3a8c",
-        "text": "#201a26"
+        "bg": "#071720",
+        "surface": "#0b202b",
+        "accent": "#5fe0c0",
+        "text": "#e6f5f1"
       }
     },
     {
