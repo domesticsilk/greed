@@ -14,6 +14,11 @@ First public release.
 - Merge state survives a restart: downloads that finished while Greed was closed are merged on
   the next start, and an interrupted merge resumes
 - HTTP proxy with optional credentials and a bypass list, applied to the running engine
+- Per-download Referer, User-Agent, cookies and extra `Name: value` headers in the Add dialog and
+  `greed add`; yt-dlp reads them from an unlinked mode-0600 file so cookies stay out of the
+  process list, and none of it is saved
+- Background tray indicator with the active count while downloads continue after the window
+  closes (X11/XEmbed), click to reopen
 - Torrent inspector with per-file progress and peer state, seeding ratio control and session
   persistence
 - Scheduled downloads, statistics, clipboard monitoring and completion notifications

@@ -58,6 +58,8 @@ runtime in between.
   the cap
 - HTTP proxy support with optional credentials and a bypass list, applied to the running engine
   when settings are saved
+- Per-download request headers: Referer, User-Agent, cookies and any extra `Name: value` line,
+  set in the Add dialog or with `greed add`; values stay in memory and are never saved
 - Seeding control: keep sharing completed torrents up to a chosen ratio
 - Scheduled downloads by preset or exact date and time
 - Torrent inspector with per-file progress, skipped files, peer state and live peer speeds
@@ -108,6 +110,8 @@ runtime in between.
 **System integration**
 
 - Single-instance window: later launches hand their links to the running instance and raise it
+- Background tray icon while downloads continue after the window closes, on X11 desktops with an
+  XEmbed system tray; click it to reopen Greed
 - `.torrent`, `.metalink` and `magnet:` handlers, plus drag and drop for torrent and metalink files
 - CLI commands for scripting and headless use
 - In-app updates from Settings > Updates, with AppImage replacement or installation to
@@ -218,6 +222,8 @@ greed add https://example.com/file.zip
 greed add magnet:?xt=urn:btih:...
 greed add ./debian.torrent
 greed add URL -d ~/Downloads -o name.iso -x 8
+greed add URL --referer https://example.com/watch --cookie "session=abc" \
+  -H "Accept-Language: en" -H "X-Requested-With: Greed"
 greed list [--json]
 greed status <gid> [--json]
 greed pause <gid>...
@@ -226,6 +232,23 @@ greed remove <gid>... [--delete]   # --delete also drops the stopped result
 greed stats
 greed shutdown                     # stop the aria2 engine
 ```
+
+### Request headers
+
+Some servers need a Referer, a browser User-Agent or a session cookie. Set them in the Add
+dialog under Request headers, or pass them to `greed add`:
+
+```sh
+greed add URL --referer https://example.com/ --user-agent "Mozilla/5.0 ..." \
+  --cookie "name=value; name2=value2" -H "Accept-Language: en"
+```
+
+`-H` takes one `Name: value` per flag and can be repeated. A field wins over an extra line with
+the same name, so there are no duplicate headers. For video pages, yt-dlp receives the same
+headers and aria2 gets them for the direct link; yt-dlp reads them from an unlinked mode-0600
+file, so cookies do not appear in the process list. Values are held in memory only: they are
+never written to the config, the aria2 session or the history. aria2 sends them on every request
+for that download, including redirects to another host.
 
 ### Single instance
 
@@ -237,6 +260,11 @@ open one. The lock and handoff files live in `$XDG_RUNTIME_DIR`, or `/tmp` when 
 
 aria2 runs as a daemon. Closing the Greed window leaves active and waiting downloads running;
 start Greed again to reconnect. `greed shutdown` stops the engine and any running downloads.
+On X11 desktops with an XEmbed system tray, closing the window while downloads are active leaves
+an icon in the tray with the active count in its tooltip. Click it to reopen Greed. The icon goes
+away when the queue finishes, the engine stops, or Greed starts again. Desktops without XEmbed
+support (for example stock GNOME) show no icon; downloads still continue. `greed tray` runs the
+indicator in the foreground.
 
 ### Desktop integration
 
@@ -282,7 +310,8 @@ dragged from a browser is not delivered; copying it works through clipboard moni
 | Vim mode | `:` | Command palette |
 | No Vim | `Ctrl+F` | Search |
 
-`Esc` clears the selection or closes the open dialog. Settings scrolls with `PgUp`/`PgDn`.
+`Esc` clears the selection or closes the open dialog. Settings and the Add dialog scroll with
+`PgUp`/`PgDn`.
 
 ## Marketplace
 
@@ -394,6 +423,8 @@ src/history.c     first-seen timestamps for the Added column
 src/cli.c         subcommands
 src/market.c      marketplace catalog and checksum-verified installs
 src/ytdlp.c       yt-dlp resolver and aria2 handoff
+src/request.c     per-download request headers for aria2 and yt-dlp
+src/tray.c        XEmbed background download indicator
 src/links.c       link detection and file:// normalization
 src/single.c      single-instance lock, link handoff and window activation
 src/x11.c         frameless window, drag/resize, maximize, minimize

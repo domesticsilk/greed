@@ -159,6 +159,8 @@ typedef struct {
     char add_name[256];
     int add_conn;
     int add_quality;
+    RequestOptions add_req;
+    bool add_req_open;
     char status[256];
     double last_poll;
     double next_clip;
@@ -904,7 +906,7 @@ static bool is_metalink_path(const char *s) {
 }
 
 static int add_links_impl(App *a, const char *text, const char *dir, const char *out, int conn,
-                          bool ui_feedback) {
+                          const RequestOptions *req, bool ui_feedback) {
     char *copy = strdup(text);
     if (!copy) return 0;
     bool single = !strchr(text, '\n');
@@ -925,6 +927,7 @@ static int add_links_impl(App *a, const char *text, const char *dir, const char 
             json_object_object_add(opts, "split", json_object_new_int(conn));
             json_object_object_add(opts, "max-connection-per-server", json_object_new_int(conn));
         }
+        request_options_apply_aria2(opts, req);
 
         struct json_object *result = NULL;
         bool torrent = is_torrent_path(line);
@@ -974,6 +977,7 @@ static int add_links_impl(App *a, const char *text, const char *dir, const char 
             a->add_urls[0] = 0;
             a->add_name[0] = 0;
             a->show_add = false;
+            if (req == &a->add_req) request_options_clear(&a->add_req);
         }
     }
     a->last_poll = 0;
@@ -981,7 +985,7 @@ static int add_links_impl(App *a, const char *text, const char *dir, const char 
 }
 
 static int add_links(App *a, const char *text, const char *dir, const char *out, int conn) {
-    return add_links_impl(a, text, dir, out, conn, true);
+    return add_links_impl(a, text, dir, out, conn, NULL, true);
 }
 
 /* Files dropped on the window: torrent and metalink files go straight to aria2.
@@ -1008,7 +1012,7 @@ static void poll_drops(App *a, cui_ctx *ui) {
         used += len;
     }
     if (text)
-        add_links_impl(a, text, a->cfg.download_dir, NULL, a->cfg.max_concurrent, false);
+        add_links_impl(a, text, a->cfg.download_dir, NULL, a->cfg.max_concurrent, NULL, false);
     else if (ignored)
         set_status(a, "Drop a .torrent or .metalink file");
     free(text);
@@ -1025,7 +1029,7 @@ static void schedule_tick(App *a) {
     for (int i = 0; i < a->sched_count; i++) {
         if (a->sched[i].due > now ||
             add_links_impl(a, a->sched[i].url, a->sched[i].dir, NULL,
-                           a->cfg.max_concurrent, false) <= 0) {
+                           a->cfg.max_concurrent, NULL, false) <= 0) {
             if (w != i) a->sched[w] = a->sched[i];
             w++;
             continue;
@@ -2484,104 +2488,141 @@ static void statusbar(App *a, cui_ctx *ui) {
 
 static void add_dialog(App *a, cui_ctx *ui) {
     if (!a->show_add) return;
+    /* Leave room for the title, header and footer so Add stays on screen. */
+    float body_h = cui_viewport_size(ui).y - 220;
+    float body_cap = a->add_req_open ? 560 : 425;
+    if (body_h > body_cap) body_h = body_cap;
+    if (body_h < 200) body_h = 200;
     cui_dialog(ui, "Add download", &a->show_add, .width = 560) {
-        cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
-            cui_label(ui, "Links");
-            cui_spacer(ui);
-            if (cui_button(ui, "Open .torrent…", .icon = CUI_ICON_FILE, .size = CUI_SIZE_SM,
-                           .variant = CUI_BUTTON_GHOST)) {
-                char path[PATH_MAX];
-                if (cui_app_file_dialog(NULL,
-                                        &(cui_file_dialog_opts){.kind = CUI_FILE_OPEN,
-                                                                .title = "Open torrent",
-                                                                .filter_name = "Torrent",
-                                                                .filter = "torrent"},
-                                        path, sizeof path)) {
-                    char *text = malloc(sizeof a->add_urls);
-                    if (text) {
-                        snprintf(text, sizeof a->add_urls, "%s", a->add_urls);
-                        size_t used = strlen(text);
-                        snprintf(text + used, sizeof a->add_urls - used, "%s%s", used ? "\n" : "", path);
-                        add_links(a, text, a->add_dir, NULL, a->add_conn);
-                        free(text);
+        if (!cui_wants_keyboard(ui)) {
+            float page = body_h * 0.75f;
+            if (cui_key_pressed(ui, CUI_KEY_PAGE_DOWN)) cui_scroll_by(ui, "add-body", page);
+            else if (cui_key_pressed(ui, CUI_KEY_PAGE_UP)) cui_scroll_by(ui, "add-body", -page);
+        }
+        cui_scroll(ui, .id = "add-body", .width = CUI_FILL, .height = CUI_PX(body_h),
+                   .gap = 12, .fade_edges = true,
+                   .fade_color = CUI_COLOR_SURFACE_RAISED) {
+            cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
+                cui_label(ui, "Links");
+                cui_spacer(ui);
+                if (cui_button(ui, "Open .torrent…", .icon = CUI_ICON_FILE, .size = CUI_SIZE_SM,
+                               .variant = CUI_BUTTON_GHOST)) {
+                    char path[PATH_MAX];
+                    if (cui_app_file_dialog(NULL,
+                                            &(cui_file_dialog_opts){.kind = CUI_FILE_OPEN,
+                                                                    .title = "Open torrent",
+                                                                    .filter_name = "Torrent",
+                                                                    .filter = "torrent"},
+                                            path, sizeof path)) {
+                        char *text = malloc(sizeof a->add_urls);
+                        if (text) {
+                            snprintf(text, sizeof a->add_urls, "%s", a->add_urls);
+                            size_t used = strlen(text);
+                            snprintf(text + used, sizeof a->add_urls - used, "%s%s", used ? "\n" : "", path);
+                            add_links(a, text, a->add_dir, NULL, a->add_conn);
+                            free(text);
+                        }
                     }
                 }
             }
-        }
-        cui_textarea(ui, "links", a->add_urls, sizeof a->add_urls,
-                     .placeholder = "One link per line: http, magnet, or .torrent",
-                     .height = 104, .autofocus = true);
-        if (ytdlp_available()) {
-            cui_switch(ui, "Resolve video pages with yt-dlp", &a->add_ytdlp);
-            if (a->add_ytdlp) {
-                cui_label(ui, "Quality");
-                static const char *quality_names[] = {"Best", "1080p", "720p", "480p", "360p"};
-                cui_segmented(ui, "add-quality", quality_names, 5, &a->add_quality,
-                              .size = CUI_SIZE_SM);
-                if (ytdlp_ffmpeg_available()) {
-                    cui_muted(ui, "Higher qualities download video and audio separately, then "
-                                  "merge them with ffmpeg.");
-                } else {
-                    cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-                        cui_muted(ui, "Higher qualities need ffmpeg.");
-                        if (cui_button(ui, "Get ffmpeg", .size = CUI_SIZE_SM,
-                                       .variant = CUI_BUTTON_OUTLINE))
-                            open_market(a);
+            cui_textarea(ui, "links", a->add_urls, sizeof a->add_urls,
+                         .placeholder = "One link per line: http, magnet, or .torrent",
+                         .height = 84, .autofocus = true);
+            if (ytdlp_available()) {
+                cui_switch(ui, "Resolve video pages with yt-dlp", &a->add_ytdlp);
+                if (a->add_ytdlp) {
+                    cui_label(ui, "Quality");
+                    static const char *quality_names[] = {"Best", "1080p", "720p", "480p", "360p"};
+                    cui_segmented(ui, "add-quality", quality_names, 5, &a->add_quality,
+                                  .size = CUI_SIZE_SM);
+                    if (ytdlp_ffmpeg_available()) {
+                        cui_muted(ui, "Higher qualities download video and audio separately, then "
+                                      "merge them with ffmpeg.");
+                    } else {
+                        cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                            cui_muted(ui, "Higher qualities need ffmpeg.");
+                            if (cui_button(ui, "Get ffmpeg", .size = CUI_SIZE_SM,
+                                           .variant = CUI_BUTTON_OUTLINE))
+                                open_market(a);
+                        }
                     }
+                } else {
+                    cui_muted(ui, "yt-dlp resolves the page and hands the direct link to aria2.");
                 }
             } else {
-                cui_muted(ui, "yt-dlp picks the best single-file stream and hands the direct "
-                              "link to aria2.");
-            }
-        } else {
-            cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-                cui_muted(ui, "Video pages need yt-dlp.");
-                if (cui_button(ui, "Get yt-dlp", .size = CUI_SIZE_SM,
-                               .variant = CUI_BUTTON_OUTLINE)) {
-                    a->show_add = false;
-                    open_market(a);
+                cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                    cui_muted(ui, "Video pages need yt-dlp.");
+                    if (cui_button(ui, "Get yt-dlp", .size = CUI_SIZE_SM,
+                                   .variant = CUI_BUTTON_OUTLINE)) {
+                        a->show_add = false;
+                        open_market(a);
+                    }
                 }
             }
-        }
-        cui_label(ui, "Save to");
-        cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
-            cui_input(ui, "add-dir", a->add_dir, sizeof a->add_dir, .width = CUI_FILL);
-            if (cui_button(ui, "Browse…", .size = CUI_SIZE_SM)) {
-                char path[PATH_MAX];
-                if (cui_app_file_dialog(NULL,
-                                        &(cui_file_dialog_opts){.kind = CUI_FILE_FOLDER,
-                                                                .title = "Save downloads to"},
-                                        path, sizeof path))
-                    snprintf(a->add_dir, sizeof a->add_dir, "%s", path);
+            cui_accordion(ui, "Request headers (not saved)", &a->add_req_open) {
+                cui_row(ui, .width = CUI_FILL, .gap = 12) {
+                    cui_input(ui, "add-referer", a->add_req.referer, sizeof a->add_req.referer,
+                              .label = "Referer", .placeholder = "https://example.com/",
+                              .width = CUI_FILL, .clearable = true);
+                    cui_input(ui, "add-user-agent", a->add_req.user_agent,
+                              sizeof a->add_req.user_agent, .label = "User agent",
+                              .placeholder = "Browser user agent", .width = CUI_FILL,
+                              .clearable = true);
+                }
+                cui_input(ui, "add-cookie", a->add_req.cookie, sizeof a->add_req.cookie,
+                          .label = "Cookies", .placeholder = "name=value; name2=value2",
+                          .password = true, .clearable = true);
+                cui_textarea(ui, "add-headers", a->add_req.headers, sizeof a->add_req.headers,
+                             .label = "Extra headers",
+                             .placeholder = "One per line, for example Accept-Language: en",
+                             .height = 44);
             }
-        }
-        cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_END) {
-            cui_input(ui, "add-name", a->add_name, sizeof a->add_name,
-                      .label = "Filename", .placeholder = "Optional, for a single link",
-                      .width = CUI_FILL);
-            double conn = a->add_conn;
-            if (cui_number(ui, "add-conn", &conn, 1, 16, .label = "Connections", .step = 1))
-                a->add_conn = (int)conn;
+            cui_label(ui, "Save to");
+            cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                cui_input(ui, "add-dir", a->add_dir, sizeof a->add_dir, .width = CUI_FILL);
+                if (cui_button(ui, "Browse…", .size = CUI_SIZE_SM)) {
+                    char path[PATH_MAX];
+                    if (cui_app_file_dialog(NULL,
+                                            &(cui_file_dialog_opts){.kind = CUI_FILE_FOLDER,
+                                                                    .title = "Save downloads to"},
+                                            path, sizeof path))
+                        snprintf(a->add_dir, sizeof a->add_dir, "%s", path);
+                }
+            }
+            cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_END) {
+                cui_input(ui, "add-name", a->add_name, sizeof a->add_name,
+                          .label = "Filename", .placeholder = "Optional, for a single link",
+                          .width = CUI_FILL);
+                double conn = a->add_conn;
+                if (cui_number(ui, "add-conn", &conn, 1, 16, .label = "Connections", .step = 1))
+                    a->add_conn = (int)conn;
+            }
         }
         cui_dialog_footer(ui) {
             if (cui_button(ui, "Cancel", .variant = CUI_BUTTON_GHOST)) a->show_add = false;
             if (cui_button(ui, "Add", .variant = CUI_BUTTON_PRIMARY)) {
-                if (a->add_ytdlp && ytdlp_available()) {
+                char req_err[256];
+                if (!request_options_validate(&a->add_req, req_err, sizeof req_err)) {
+                    set_status(a, "%s", req_err);
+                } else if (a->add_ytdlp && ytdlp_available()) {
                     if (!a->add_urls[0]) {
                         set_status(a, "Paste a link first");
                     } else if (!ytdlp_start(&a->ytdlp, a->cfg.rpc_port, a->add_urls,
-                                            a->add_dir, (YtdlpQuality)a->add_quality)) {
+                                            a->add_dir, (YtdlpQuality)a->add_quality,
+                                            &a->add_req)) {
                         set_status(a, "A video task is already running");
                     } else {
                         a->ytdlp_active = true;
                         a->add_urls[0] = 0;
                         a->add_name[0] = 0;
+                        request_options_clear(&a->add_req);
                         a->show_add = false;
                         set_status(a, "Resolving video links");
                     }
                 } else {
                     const char *name = a->add_name[0] ? a->add_name : NULL;
-                    add_links(a, a->add_urls, a->add_dir, name, a->add_conn);
+                    add_links_impl(a, a->add_urls, a->add_dir, name, a->add_conn,
+                                   &a->add_req, true);
                 }
             }
         }
@@ -4111,9 +4152,17 @@ int ui_run(const char *initial_links) {
     ytdlp_init(&a->ytdlp);
     a->sched_count = config_schedules_load(a->sched, GREED_MAX_SCHEDULED);
 
-    /* Test hook for screenshots: GREED_DEMO=add|settings|settings-bandwidth|settings-torrents|details|stats|empty */
+    /* Test hook for screenshots: GREED_DEMO=add|add-headers|settings|settings-bandwidth|settings-torrents|details|stats|empty */
     const char *demo = getenv("GREED_DEMO");
     if (demo && !strcmp(demo, "add")) open_add(a);
+    else if (demo && !strcmp(demo, "add-headers")) {
+        open_add(a);
+        a->add_req_open = true;
+        snprintf(a->add_req.referer, sizeof a->add_req.referer, "https://example.com/watch");
+        snprintf(a->add_req.cookie, sizeof a->add_req.cookie, "session=abc123; theme=dark");
+        snprintf(a->add_req.headers, sizeof a->add_req.headers,
+                 "Accept-Language: en\nX-Requested-With: Greed");
+    }
     else if (demo && !strcmp(demo, "settings")) open_settings(a);
     else if (demo && !strcmp(demo, "settings-bandwidth")) {
         open_settings(a);

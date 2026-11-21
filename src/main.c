@@ -4,6 +4,7 @@
 #include "links.h"
 #include "native.h"
 #include "single.h"
+#include "tray.h"
 #include "ui.h"
 #include "version.h"
 
@@ -20,6 +21,8 @@ static void print_help(void) {
            "  greed <link|file>         open the GUI with a download ready to add\n"
            "  greed gui                 open the GUI\n"
            "  greed add <link|file.torrent>... [-d DIR] [-o NAME] [-x CONN]\n"
+           "            [--referer URL] [--user-agent UA] [--cookie TEXT]\n"
+           "            [-H 'Name: value']...\n"
            "  greed list [--json]\n"
            "  greed status <gid> [--json]\n"
            "  greed pause <gid>...\n"
@@ -29,6 +32,7 @@ static void print_help(void) {
            "  greed shutdown            stop the aria2 engine\n"
            "  greed browser install     register the browser extension helper\n"
            "  greed browser uninstall   remove the browser extension helper\n"
+           "  greed tray                show the background download indicator\n"
            "  greed version\n"
            "  greed help\n");
 }
@@ -49,6 +53,7 @@ static int run_gui(char *links) {
     int rc = ui_run(links);
     free(links);
     single_release();
+    tray_spawn();
     return rc;
 }
 
@@ -63,6 +68,7 @@ int main(int argc, char **argv) {
 
     const char *cmd = argv[1];
     if (!strcmp(cmd, "native-host")) return native_host_run();
+    if (!strcmp(cmd, "tray")) return tray_run();
     if (!strcmp(cmd, "browser")) {
         if (argc < 3 || (strcmp(argv[2], "install") && strcmp(argv[2], "uninstall"))) {
             fprintf(stderr, "usage: greed browser install|uninstall\n");

@@ -6,6 +6,7 @@
 #include <stddef.h>
 
 #include "model.h"
+#include "request.h"
 
 struct json_object;
 
@@ -36,7 +37,7 @@ bool ytdlp_ffmpeg_available(void);
 /* Picks a video-only and audio-only pair within max_height (0 = best). */
 bool ytdlp_pick_pair(struct json_object *formats, int max_height, int *video, int *audio);
 bool ytdlp_start(YtdlpJob *j, int rpc_port, const char *text, const char *dir,
-                 YtdlpQuality quality);
+                 YtdlpQuality quality, const RequestOptions *req);
 void ytdlp_snapshot(YtdlpJob *j, bool *running, int *done, int *total, char *error, size_t cap,
                     char *note, size_t note_cap);
 

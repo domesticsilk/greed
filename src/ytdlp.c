@@ -216,16 +216,42 @@ static int quality_height(YtdlpQuality q) {
     }
 }
 
-static bool resolve(const char *url, YtdlpQuality quality, Resolved *out, char *err,
-                    size_t cap) {
+static bool resolve(const char *url, YtdlpQuality quality, const RequestOptions *req,
+                    Resolved *out, char *err, size_t cap) {
     const char *bin = market_tool_path("yt-dlp", "yt-dlp");
     if (!bin) {
         snprintf(err, cap, "yt-dlp is not installed.");
         return false;
     }
 
+    char *args[128];
+    int n = 0;
+    args[n++] = (char *)bin;
+    args[n++] = "-J";
+    args[n++] = "--no-playlist";
+    args[n++] = "--no-warnings";
+    args[n++] = "--socket-timeout";
+    args[n++] = "15";
+    args[n++] = "--extractor-args";
+    args[n++] = "youtube:player_client=default,android";
+    int config_fd = -1;
+    char config_path[64] = {0};
+    if (!request_options_empty(req)) {
+        config_fd = request_options_ytdlp_config(req, config_path, sizeof config_path);
+        if (config_fd < 0) {
+            snprintf(err, cap, "Could not prepare request headers.");
+            return false;
+        }
+        args[n++] = "--config-locations";
+        args[n++] = config_path;
+    }
+    args[n++] = "--";
+    args[n++] = (char *)url;
+    args[n] = NULL;
+
     int fds[2];
     if (pipe(fds) != 0) {
+        if (config_fd >= 0) close(config_fd);
         snprintf(err, cap, "Could not start yt-dlp.");
         return false;
     }
@@ -233,6 +259,7 @@ static bool resolve(const char *url, YtdlpQuality quality, Resolved *out, char *
     if (pid < 0) {
         close(fds[0]);
         close(fds[1]);
+        if (config_fd >= 0) close(config_fd);
         snprintf(err, cap, "Could not start yt-dlp.");
         return false;
     }
@@ -248,12 +275,11 @@ static bool resolve(const char *url, YtdlpQuality quality, Resolved *out, char *
         alarm(90);
         /* Default plus android: some networks only expose the combined format
          * through android, while the default clients expose adaptive streams. */
-        execl(bin, bin, "-J", "--no-playlist", "--no-warnings", "--socket-timeout", "15",
-              "--extractor-args", "youtube:player_client=default,android",
-              "--", url, (char *)NULL);
+        execv(bin, args);
         _exit(127);
     }
     close(fds[1]);
+    if (config_fd >= 0) close(config_fd);
 
     char *data = NULL;
     size_t len = 0, size = 0;
@@ -358,19 +384,27 @@ static bool resolve(const char *url, YtdlpQuality quality, Resolved *out, char *
 }
 
 static bool add_one(int port, const char *url, const char *dir, const char *name,
-                    char headers[][512], int header_count, char *gid, size_t gidcap,
-                    char *err, size_t cap) {
+                    char headers[][512], int header_count, const RequestOptions *req,
+                    char *gid, size_t gidcap, char *err, size_t cap) {
     Rpc rpc;
     rpc_init(&rpc, port);
     struct json_object *opts = json_object_new_object();
     json_object_object_add(opts, "dir", json_object_new_string(dir));
     json_object_object_add(opts, "out", json_object_new_string(name));
-    if (header_count) {
-        struct json_object *h = json_object_new_array();
-        for (int i = 0; i < header_count; i++)
-            json_object_array_add(h, json_object_new_string(headers[i]));
-        json_object_object_add(opts, "header", h);
+    struct json_object *h = json_object_new_array();
+    for (int i = 0; i < header_count; i++) {
+        char header_name[128];
+        size_t n = strcspn(headers[i], ":");
+        if (n >= sizeof header_name) n = sizeof header_name - 1;
+        memcpy(header_name, headers[i], n);
+        while (n && (header_name[n - 1] == ' ' || header_name[n - 1] == '\t')) n--;
+        header_name[n] = 0;
+        if (request_options_has_header(req, header_name)) continue;
+        json_object_array_add(h, json_object_new_string(headers[i]));
     }
+    request_options_add_headers(h, req);
+    if (json_object_array_length(h)) json_object_object_add(opts, "header", h);
+    else json_object_put(h);
     struct json_object *params = json_object_new_array();
     struct json_object *urls = json_object_new_array();
     json_object_array_add(urls, json_object_new_string(url));
@@ -1028,6 +1062,7 @@ typedef struct {
     char *text;
     char dir[1024];
     YtdlpQuality quality;
+    RequestOptions req;
 } Arg;
 
 static void set_note(YtdlpJob *job, const char *note) {
@@ -1055,7 +1090,7 @@ static void *worker(void *p) {
 
         Resolved r;
         char err[512] = {0};
-        if (!resolve(line, arg->quality, &r, err, sizeof err)) {
+        if (!resolve(line, arg->quality, &arg->req, &r, err, sizeof err)) {
             snprintf(last_error, sizeof last_error, "%s", err);
             continue;
         }
@@ -1077,10 +1112,10 @@ static void *worker(void *p) {
             snprintf(video_path, sizeof video_path, "%s/%s", arg->dir, part_video);
             snprintf(audio_path, sizeof audio_path, "%s/%s", arg->dir, part_audio);
             char vgid[32] = {0}, agid[32] = {0};
-            if (add_one(arg->port, r.url, arg->dir, part_video, r.headers, r.header_count, vgid,
-                        sizeof vgid, err, sizeof err) &&
+            if (add_one(arg->port, r.url, arg->dir, part_video, r.headers, r.header_count,
+                        &arg->req, vgid, sizeof vgid, err, sizeof err) &&
                 add_one(arg->port, r.audio_url, arg->dir, part_audio, r.audio_headers,
-                        r.audio_header_count, agid, sizeof agid, err, sizeof err)) {
+                        r.audio_header_count, &arg->req, agid, sizeof agid, err, sizeof err)) {
                 job_register(true, vgid, agid, video_path, audio_path, final_path, tmp_path,
                              r.ext, is_youtube_url(line));
                 ok = true;
@@ -1089,8 +1124,8 @@ static void *worker(void *p) {
             }
         } else {
             char gid[32] = {0};
-            if (add_one(arg->port, r.url, arg->dir, final_name, r.headers, r.header_count, gid,
-                        sizeof gid, err, sizeof err)) {
+            if (add_one(arg->port, r.url, arg->dir, final_name, r.headers, r.header_count,
+                        &arg->req, gid, sizeof gid, err, sizeof err)) {
                 job_register(false, gid, NULL, NULL, NULL, final_path, NULL, r.ext,
                              is_youtube_url(line));
                 ok = true;
@@ -1133,7 +1168,7 @@ void ytdlp_init(YtdlpJob *j) {
 bool ytdlp_available(void) { return market_tool_path("yt-dlp", "yt-dlp") != NULL; }
 
 bool ytdlp_start(YtdlpJob *j, int rpc_port, const char *text, const char *dir,
-                 YtdlpQuality quality) {
+                 YtdlpQuality quality, const RequestOptions *req) {
     pthread_mutex_lock(&j->lock);
     bool busy = j->running;
     if (!busy) {
@@ -1157,6 +1192,7 @@ bool ytdlp_start(YtdlpJob *j, int rpc_port, const char *text, const char *dir,
     arg->job = j;
     arg->port = rpc_port;
     arg->quality = quality;
+    if (req) arg->req = *req;
     arg->text = strdup(text ? text : "");
     snprintf(arg->dir, sizeof arg->dir, "%s", dir);
     if (!arg->text) {

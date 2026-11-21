@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "model.h"
+#include "request.h"
 #include "rpc.h"
 #include "version.h"
 
@@ -63,6 +64,30 @@ static bool is_torrent_path(const char *s) {
     return n > 8 && !strcmp(s + n - 8, ".torrent");
 }
 
+static bool opt_is(const char *arg, const char *name) {
+    size_t n = strlen(name);
+    return !strcmp(arg, name) || (!strncmp(arg, name, n) && arg[n] == '=');
+}
+
+static const char *opt_value(int argc, char **argv, int *i, const char *name) {
+    size_t n = strlen(name);
+    if (!strcmp(argv[*i], name)) {
+        if (*i + 1 >= argc) return NULL;
+        return argv[++(*i)];
+    }
+    if (!strncmp(argv[*i], name, n) && argv[*i][n] == '=')
+        return argv[*i] + n + 1;
+    return NULL;
+}
+
+static bool append_header(RequestOptions *req, const char *value) {
+    size_t used = strlen(req->headers);
+    if (used >= sizeof req->headers) return false;
+    int n = snprintf(req->headers + used, sizeof req->headers - used, "%s%s",
+                     used ? "\n" : "", value);
+    return n > 0 && (size_t)n < sizeof req->headers - used;
+}
+
 static struct json_object *torrent_params(const char *path, struct json_object *opts) {
     size_t len = 0;
     char *b64 = base64_file(path, &len);
@@ -79,20 +104,56 @@ static int cmd_add(int argc, char **argv) {
     const char *dir = NULL;
     const char *name = NULL;
     int conn = 0;
+    RequestOptions req = {0};
     const char *urls[128];
     int url_count = 0;
     for (int i = 0; i < argc; i++) {
+        const char *v = NULL;
         if (!strcmp(argv[i], "-d") && i + 1 < argc)
             dir = argv[++i];
         else if (!strcmp(argv[i], "-o") && i + 1 < argc)
             name = argv[++i];
         else if (!strcmp(argv[i], "-x") && i + 1 < argc)
             conn = atoi(argv[++i]);
-        else if (argv[i][0] != '-' && url_count < 128)
+        else if (opt_is(argv[i], "--referer")) {
+            if (!(v = opt_value(argc, argv, &i, "--referer"))) {
+                fprintf(stderr, "error: --referer needs a value\n");
+                return 1;
+            }
+            snprintf(req.referer, sizeof req.referer, "%s", v);
+        } else if (opt_is(argv[i], "--user-agent")) {
+            if (!(v = opt_value(argc, argv, &i, "--user-agent"))) {
+                fprintf(stderr, "error: --user-agent needs a value\n");
+                return 1;
+            }
+            snprintf(req.user_agent, sizeof req.user_agent, "%s", v);
+        } else if (opt_is(argv[i], "--cookie")) {
+            if (!(v = opt_value(argc, argv, &i, "--cookie"))) {
+                fprintf(stderr, "error: --cookie needs a value\n");
+                return 1;
+            }
+            snprintf(req.cookie, sizeof req.cookie, "%s", v);
+        } else if (opt_is(argv[i], "--header") || opt_is(argv[i], "-H")) {
+            if (!(v = opt_value(argc, argv, &i, "--header")) &&
+                !(v = opt_value(argc, argv, &i, "-H"))) {
+                fprintf(stderr, "error: --header needs a value\n");
+                return 1;
+            }
+            if (!append_header(&req, v)) {
+                fprintf(stderr, "error: too many headers\n");
+                return 1;
+            }
+        } else if (argv[i][0] != '-' && url_count < 128) {
             urls[url_count++] = argv[i];
+        }
     }
     if (!url_count) {
         fprintf(stderr, "error: no link given\n");
+        return 1;
+    }
+    char req_err[256];
+    if (!request_options_validate(&req, req_err, sizeof req_err)) {
+        fprintf(stderr, "error: %s\n", req_err);
         return 1;
     }
     Config cfg;
@@ -109,6 +170,7 @@ static int cmd_add(int argc, char **argv) {
             json_object_object_add(opts, "split", json_object_new_int(conn));
             json_object_object_add(opts, "max-connection-per-server", json_object_new_int(conn));
         }
+        request_options_apply_aria2(opts, &req);
         struct json_object *result = NULL;
         if (is_torrent_path(urls[i])) {
             struct json_object *params = torrent_params(urls[i], opts);

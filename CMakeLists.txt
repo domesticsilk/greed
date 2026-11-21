@@ -39,9 +39,11 @@ add_executable(greed
     src/checksum.c
     src/theme.c
     src/market.c
+    src/request.c
     src/ytdlp.c
     src/update.c
     src/x11.c
+    src/tray.c
     src/links.c
     src/single.c
     src/history.c
@@ -55,6 +57,7 @@ target_link_libraries(greed PRIVATE
     ${JSONC_LIBRARIES}
     ${CURL_LIBRARIES}
     ${X11_LIBRARIES}
+    Xext
     m
     dl
     Threads::Threads
@@ -88,7 +91,7 @@ target_include_directories(greed-browser-check PRIVATE src ${JSONC_INCLUDE_DIRS}
 target_link_libraries(greed-browser-check PRIVATE ${JSONC_LIBRARIES})
 add_test(NAME browser COMMAND greed-browser-check)
 
-add_executable(greed-ytdlp-check tests/ytdlp.c src/ytdlp.c src/config.c)
+add_executable(greed-ytdlp-check tests/ytdlp.c src/ytdlp.c src/request.c src/config.c)
 target_include_directories(greed-ytdlp-check PRIVATE src ${JSONC_INCLUDE_DIRS})
 target_link_libraries(greed-ytdlp-check PRIVATE ${JSONC_LIBRARIES} Threads::Threads)
 add_test(NAME ytdlp COMMAND greed-ytdlp-check)
@@ -103,10 +106,15 @@ target_include_directories(greed-model-check PRIVATE src ${JSONC_INCLUDE_DIRS})
 target_link_libraries(greed-model-check PRIVATE ${JSONC_LIBRARIES})
 add_test(NAME model COMMAND greed-model-check)
 
+add_executable(greed-request-check tests/request.c src/request.c)
+target_include_directories(greed-request-check PRIVATE src ${JSONC_INCLUDE_DIRS})
+target_link_libraries(greed-request-check PRIVATE ${JSONC_LIBRARIES})
+add_test(NAME request COMMAND greed-request-check)
+
 # Tests are assert-based; keep assert() active in Release builds too.
 foreach(check greed-contrast-check greed-links-check greed-proxy-check
               greed-checksum-check greed-browser-check greed-ytdlp-check
-              greed-history-check greed-model-check)
+              greed-history-check greed-model-check greed-request-check)
     target_compile_options(${check} PRIVATE -UNDEBUG)
 endforeach()
 
