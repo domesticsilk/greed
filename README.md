@@ -110,7 +110,7 @@ runtime in between.
 - `.torrent`, `.metalink` and `magnet:` handlers, plus drag and drop for torrent and metalink files
 - CLI commands for scripting and headless use
 - In-app updates from Settings > Updates, with AppImage replacement or installation to
-  `~/.local/bin/greed`
+  `~/.local/bin/greed`, after checking the release SHA-256
 - Marketplace for optional engines, tools and themes, with SHA-256 verification
 
 ## Requirements
@@ -171,9 +171,11 @@ For a quick local build against the bundled Arch binaries, use
 `./packaging/build-appimage.sh` instead. Both scripts download `appimagetool` on first use and
 fall back to extracting it when FUSE is unavailable.
 
-Publish `Greed-x86_64.AppImage` as the asset of a GitHub release. Settings > Updates looks for
-that exact name and compares the release tag with `GREED_VERSION` in `src/version.h`. On
-distributions without libfuse2, install it or start the file with `--appimage-extract-and-run`.
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the AppImage, writes
+`Greed-x86_64.AppImage.sha256` and publishes both assets. Settings > Updates looks for that exact
+name and compares the release tag with `GREED_VERSION` in `src/version.h`; it checks the
+`.sha256` asset before replacing the running file. On distributions without libfuse2, install it
+or start the file with `--appimage-extract-and-run`.
 
 ## Usage
 
