@@ -179,8 +179,10 @@ For a quick local build against the bundled Arch binaries, use
 `./packaging/build-appimage.sh` instead. Both scripts download `appimagetool` on first use and
 fall back to extracting it when FUSE is unavailable.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the AppImage, writes
-`Greed-x86_64.AppImage.sha256` and publishes both assets. Settings > Updates looks for that exact
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which checks that the tag matches
+`GREED_VERSION`, builds the AppImage, writes `Greed-x86_64.AppImage.sha256`, packages the browser
+extension and publishes the three assets with the release notes from `CHANGELOG.md`. Settings >
+Updates looks for that exact
 name and compares the release tag with `GREED_VERSION` in `src/version.h`; it checks the
 `.sha256` asset before replacing the running file. On distributions without libfuse2, install it
 or start the file with `--appimage-extract-and-run`.

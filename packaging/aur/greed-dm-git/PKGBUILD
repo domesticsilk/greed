@@ -1,6 +1,6 @@
 # Maintainer: owarimono <navammd@gmail.com>
 pkgname=greed-dm-git
-pkgver=0.1.0.r53.gf73df62
+pkgver=0.1.0.r58.g08fc163
 pkgrel=1
 pkgdesc='Dark download manager for HTTP, BitTorrent, Metalink and video pages'
 arch=('x86_64')

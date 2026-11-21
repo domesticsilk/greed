@@ -12,12 +12,23 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - name: Check that the tag matches the version
+        run: |
+          version=$(sed -n 's/^#define GREED_VERSION "\(.*\)"/\1/p' src/version.h)
+          test "v$version" = "$GITHUB_REF_NAME"
       - name: Build the portable AppImage
         run: ./packaging/build-portable.sh
       - name: Write the SHA-256 file
         run: sha256sum build/Greed-x86_64.AppImage > build/Greed-x86_64.AppImage.sha256
       - name: Package the extension
         run: (cd extension && zip -qr ../build/Greed-extension.zip .)
+      - name: Extract the release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p build
+          awk -v v="$version" '$0 ~ "^## " v "([ \t]|$)" {p=1; next} p && /^## / {exit} p' \
+            CHANGELOG.md > build/release-notes.md
+          test -s build/release-notes.md
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -27,4 +38,4 @@ jobs:
             build/Greed-x86_64.AppImage.sha256 \
             build/Greed-extension.zip \
             --title "Greed $GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file build/release-notes.md
