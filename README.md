@@ -49,6 +49,8 @@ runtime in between.
 **Download engine**
 
 - HTTP, HTTPS, FTP, BitTorrent and Metalink downloads through aria2
+- Video pages through yt-dlp, with Best, 1080p, 720p, 480p and 360p quality choices; separate
+  video and audio streams merge into one MP4 or MKV with ffmpeg
 - Resume, multiple connections per download and checksum verification
 - Bundled aria2 runtime, with a fallback to the system `aria2c`
 - Global download and upload limits in KB/s, applied live, with a throughput chart that draws
@@ -71,6 +73,8 @@ runtime in between.
 - Resizable sidebar from 140 to 420 px, with live transfer speeds in the status bar
 - Searchable download table with Name, Size, Progress, Speed, ETA, Added, Location, Connections
   and Status; every column except Name can be hidden
+- YouTube rows show a three-dot orbit spinner while they download or merge; other rows use the
+  status dot
 - Click a header to sort, drag a divider to resize the column on its right, and use the Columns
   menu to show, hide or reset columns; sort order and widths persist across restarts
 - Details pane with progress, size, speed, ETA, Added time, save location, connections, seeders
@@ -87,7 +91,8 @@ runtime in between.
 - Row actions: open a finished file, open its folder, copy the source link or retry a failed
   download
 - Bulk selection by drag band or `Ctrl+click`, then pause, resume or remove in one go
-- Add dialog with a per-download directory, file name and connection count
+- Add dialog with a per-download directory, file name and connection count, plus a quality picker
+  for video pages
 
 **Keyboard and accessibility**
 
@@ -167,6 +172,7 @@ looks for that exact name and compares the release tag with `GREED_VERSION` in `
 ```sh
 greed                              # open the GUI
 greed https://example.com/file.zip # open the Add dialog with the link
+greed https://youtu.be/...         # video page in the Add dialog
 greed magnet:?xt=urn:btih:...      # magnet in the Add dialog
 greed ./debian.torrent             # torrent or metalink file in the Add dialog
 ```
@@ -256,11 +262,20 @@ built-in copy when the network or the catalog is unavailable.
   tools under `tools/<id>/`. Nothing outside that folder is written.
 - The catalog is cached as `~/.local/share/greed/marketplace/catalog.json`, and installed items
   are tracked in `installed.json` next to it. Remove deletes the installed file.
-- yt-dlp is the first engine. With it installed, the Add dialog offers "Resolve video pages with
-  yt-dlp": Greed asks yt-dlp for the best single-file progressive stream and adds the direct URL
-  to aria2 with the headers that stream needs. YouTube exposes a combined 360p stream to this
-  resolver; sites that only offer separate video and audio streams need merging, which is not
-  offered yet.
+- yt-dlp resolves video pages. Install it, enable "Resolve video pages with yt-dlp" in the Add
+  dialog, and pick Best, 1080p, 720p, 480p or 360p. Greed prefers a single progressive stream at
+  the requested height. When the site only offers separate streams, it downloads the video and
+  audio halves with aria2 and merges them with ffmpeg.
+- ffmpeg merges those halves. It is a static 6.0 build from the catalog and installs next to
+  yt-dlp. Without it, qualities above 360p fall back to the best combined stream and the dialog
+  says that ffmpeg is needed.
+- The merged container is MP4 when the video is MP4 and the audio is M4A or MP4; otherwise it is
+  MKV. The final file takes the video's name, and the audio half is deleted after a successful
+  merge. If that name already exists, aria2 saves the new video half as `name.1.ext` and the
+  merge follows that name, so the older file is not touched.
+- Merge state lives in memory. If Greed quits during a merge, the merge does not resume: the
+  complete video half stays under the final name and the audio half remains beside it. Completed
+  merges survive restarts.
 - Theme packs use Greed's theme JSON format. After installation they appear in
   Settings > Appearance next to the 76 built-in themes.
 - Installing a theme does not switch to it. Installed themes show Apply in the Marketplace and
