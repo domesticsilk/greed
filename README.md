@@ -156,16 +156,24 @@ ctest --output-on-failure
 
 ## AppImage
 
+For a release, build inside an Ubuntu 22.04 rootfs so the binary needs no newer than glibc 2.35:
+
 ```sh
-./packaging/build-appimage.sh
+./packaging/build-portable.sh
 ```
 
-The script writes `build/Greed-x86_64.AppImage` (about 3.4 MB) with the private aria2 library
-inside, so the release runs on a machine with no aria2 installed. The first run downloads
-`appimagetool` into `build/`; when FUSE is unavailable, the script falls back to extracting it.
+The script downloads the Ubuntu base rootfs once, installs the build dependencies inside it,
+runs the tests, and writes `build/Greed-x86_64.AppImage` with aria2 and its private libraries
+bundled. It needs user namespaces (`unshare -r`), not Docker. Greed itself uses the system
+libcurl, json-c and X11 libraries.
 
-Publish that file as the `Greed-x86_64.AppImage` asset of a GitHub release. Settings > Updates
-looks for that exact name and compares the release tag with `GREED_VERSION` in `src/version.h`.
+For a quick local build against the bundled Arch binaries, use
+`./packaging/build-appimage.sh` instead. Both scripts download `appimagetool` on first use and
+fall back to extracting it when FUSE is unavailable.
+
+Publish `Greed-x86_64.AppImage` as the asset of a GitHub release. Settings > Updates looks for
+that exact name and compares the release tag with `GREED_VERSION` in `src/version.h`. On
+distributions without libfuse2, install it or start the file with `--appimage-extract-and-run`.
 
 ## Usage
 
