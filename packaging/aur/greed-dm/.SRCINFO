@@ -1,0 +1,26 @@
+pkgbase = greed-dm
+	pkgdesc = Dark download manager for HTTP, BitTorrent, Metalink and video pages
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/domesticsilk/greed
+	arch = x86_64
+	license = GPL-2.0-only
+	makedepends = cmake
+	makedepends = git
+	makedepends = pkgconf
+	depends = aria2
+	depends = curl
+	depends = json-c
+	depends = hicolor-icon-theme
+	depends = libice
+	depends = libsm
+	depends = libx11
+	depends = libxext
+	optdepends = yt-dlp: resolve video pages
+	optdepends = ffmpeg: merge separate video and audio streams
+	optdepends = libnotify: desktop notifications on completion
+	conflicts = greed-dm-git
+	source = git+https://github.com/domesticsilk/greed.git#tag=v0.1.0
+	sha256sums = SKIP
+
+pkgname = greed-dm
