@@ -45,6 +45,8 @@ add_executable(greed
     src/links.c
     src/single.c
     src/history.c
+    src/browser.c
+    src/native.c
 )
 target_include_directories(greed PRIVATE src vendor/cui ${CMAKE_BINARY_DIR})
 target_compile_options(greed PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
@@ -81,6 +83,11 @@ target_include_directories(greed-checksum-check PRIVATE src ${JSONC_INCLUDE_DIRS
 target_link_libraries(greed-checksum-check PRIVATE ${JSONC_LIBRARIES})
 add_test(NAME checksum COMMAND greed-checksum-check)
 
+add_executable(greed-browser-check tests/browser.c src/browser.c src/config.c)
+target_include_directories(greed-browser-check PRIVATE src ${JSONC_INCLUDE_DIRS})
+target_link_libraries(greed-browser-check PRIVATE ${JSONC_LIBRARIES})
+add_test(NAME browser COMMAND greed-browser-check)
+
 add_executable(greed-ytdlp-check tests/ytdlp.c src/ytdlp.c src/config.c)
 target_include_directories(greed-ytdlp-check PRIVATE src ${JSONC_INCLUDE_DIRS})
 target_link_libraries(greed-ytdlp-check PRIVATE ${JSONC_LIBRARIES} Threads::Threads)
@@ -98,8 +105,8 @@ add_test(NAME model COMMAND greed-model-check)
 
 # Tests are assert-based; keep assert() active in Release builds too.
 foreach(check greed-contrast-check greed-links-check greed-proxy-check
-              greed-checksum-check greed-ytdlp-check greed-history-check
-              greed-model-check)
+              greed-checksum-check greed-browser-check greed-ytdlp-check
+              greed-history-check greed-model-check)
     target_compile_options(${check} PRIVATE -UNDEBUG)
 endforeach()
 

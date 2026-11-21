@@ -7,6 +7,7 @@
  * link handoffs; later processes write the links and exit. */
 bool single_acquire(void);
 void single_set_window(unsigned long win);
+bool single_running(void);
 bool single_focus(void);
 bool single_handoff(const char *links);
 char *single_take_handoff(void);

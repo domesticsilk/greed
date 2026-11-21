@@ -83,6 +83,11 @@ static bool peer(unsigned long *win, char *display, size_t cap) {
     return true;
 }
 
+bool single_running(void) {
+    unsigned long win = 0;
+    return peer(&win, NULL, 0);
+}
+
 bool single_focus(void) {
     unsigned long win = 0;
     char display[128] = {0};

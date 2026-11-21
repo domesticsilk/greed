@@ -1,5 +1,8 @@
 #include "cli.h"
+
+#include "browser.h"
 #include "links.h"
+#include "native.h"
 #include "single.h"
 #include "ui.h"
 #include "version.h"
@@ -24,6 +27,8 @@ static void print_help(void) {
            "  greed remove <gid>... [--delete]\n"
            "  greed stats\n"
            "  greed shutdown            stop the aria2 engine\n"
+           "  greed browser install     register the browser extension helper\n"
+           "  greed browser uninstall   remove the browser extension helper\n"
            "  greed version\n"
            "  greed help\n");
 }
@@ -57,6 +62,14 @@ int main(int argc, char **argv) {
     }
 
     const char *cmd = argv[1];
+    if (!strcmp(cmd, "native-host")) return native_host_run();
+    if (!strcmp(cmd, "browser")) {
+        if (argc < 3 || (strcmp(argv[2], "install") && strcmp(argv[2], "uninstall"))) {
+            fprintf(stderr, "usage: greed browser install|uninstall\n");
+            return 1;
+        }
+        return !strcmp(argv[2], "install") ? browser_install() : browser_uninstall();
+    }
     if (!strcmp(cmd, "gui")) {
         char *links = argc > 2 ? greed_join_links(argc - 2, argv + 2) : NULL;
         return run_gui(links);

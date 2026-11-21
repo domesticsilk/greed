@@ -42,4 +42,6 @@ First public release.
   bundled
 - `.torrent`, `.metalink` and `magnet:` system handlers, single-instance link handoff and drag
   and drop
+- Chromium extension for right-click downloads, with a native messaging helper registered by
+  `greed browser install`
 - CI builds and tests every push; a tag builds the AppImage and publishes it with its checksum

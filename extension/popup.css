@@ -1,0 +1,130 @@
+:root {
+  color-scheme: dark;
+  --bg: #0a0a0a;
+  --surface: #101010;
+  --raised: #171717;
+  --border: #262626;
+  --text: #fafafa;
+  --muted: #a3a3a3;
+  --good: #7fce9a;
+  --bad: #d97777;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 320px;
+  margin: 0;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+header img { width: 24px; height: 24px; }
+
+h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bad);
+  box-shadow: 0 0 0 3px rgb(217 119 119 / 15%);
+}
+
+body[data-online="true"] .dot {
+  background: var(--good);
+  box-shadow: 0 0 0 3px rgb(127 206 154 / 15%);
+}
+
+button {
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { background: #1f1f1f; }
+button:disabled { color: #6b6b6b; cursor: default; }
+
+button.primary {
+  width: 100%;
+  border-color: #3a3a3a;
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) { background: #e5e5e5; }
+
+button:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.url {
+  margin: 7px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note {
+  min-height: 18px;
+  margin: 6px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.fix {
+  margin: 0 0 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.fix code {
+  color: var(--text);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 11px;
+}
+
+.hint {
+  margin: 14px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hint b { color: var(--text); font-weight: 600; }

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Greed</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon32.png" alt="">
+    <h1>Greed</h1>
+  </header>
+
+  <p class="status"><span class="dot"></span><span id="status-text">Checking the helper...</span></p>
+
+  <button id="page" class="primary" disabled>Download this page</button>
+  <p id="page-url" class="url"></p>
+  <p id="note" class="note" role="status"></p>
+  <p id="fix" class="fix" hidden>Run <code>greed browser install</code> in a terminal, then reload this extension.</p>
+
+  <p class="hint">Right-click a link, image, video or audio and choose <b>Download with Greed</b>.</p>
+
+  <script src="popup.js"></script>
+</body>
+</html>

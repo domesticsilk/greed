@@ -37,6 +37,7 @@ runtime in between.
 - [Requirements](#requirements)
 - [Build](#build)
 - [AppImage](#appimage)
+- [Browser extension](#browser-extension)
 - [Usage](#usage)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Marketplace](#marketplace)
@@ -111,6 +112,7 @@ runtime in between.
 - CLI commands for scripting and headless use
 - In-app updates from Settings > Updates, with AppImage replacement or installation to
   `~/.local/bin/greed`, after checking the release SHA-256
+- Chromium extension for right-click downloads, through a small native messaging helper in C
 - Marketplace for optional engines, tools and themes, with SHA-256 verification
 
 ## Requirements
@@ -176,6 +178,20 @@ Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the AppIma
 name and compares the release tag with `GREED_VERSION` in `src/version.h`; it checks the
 `.sha256` asset before replacing the running file. On distributions without libfuse2, install it
 or start the file with `--appimage-extract-and-run`.
+
+## Browser extension
+
+`extension/` is a Chromium extension for Chrome, Chromium, Brave, Edge, Vivaldi and Opera. It
+sends the link under the cursor to Greed through a native messaging helper written in C.
+
+```sh
+greed browser install
+```
+
+That registers the helper for every browser profile it finds. Then open `chrome://extensions`,
+enable Developer mode, choose Load unpacked and select the `extension/` folder. Right-click a
+link, image, video or audio and choose Download with Greed. The helper starts Greed when it is
+not already running. See [extension/README.md](extension/README.md) for limits and removal.
 
 ## Usage
 
@@ -376,9 +392,12 @@ src/single.c      single-instance lock, link handoff and window activation
 src/x11.c         frameless window, drag/resize, maximize, minimize
 src/checksum.c    checksum helpers
 src/update.c      in-app updates
+src/browser.c     browser helper registration and message parsing
+src/native.c      Chromium native messaging host
 src/theme.c       built-in themes and theme JSON loading
 src/logo.h        title bar wordmark alpha mask (generated asset)
 tests/            link, history and contrast checks
+extension/        Chromium extension (Manifest V3)
 marketplace/      catalog and theme pack assets
 vendor/cui/       CUI 1.4.0 amalgamation (MIT)
 vendor/aria2/     aria2c and libaria2 (GPL-2.0)
