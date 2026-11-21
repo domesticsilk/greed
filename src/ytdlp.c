@@ -1072,6 +1072,14 @@ static void set_note(YtdlpJob *job, const char *note) {
     pthread_mutex_unlock(&job->lock);
 }
 
+static void job_progress(YtdlpJob *job, int done, int total) {
+    pthread_mutex_lock(&job->lock);
+    job->processed++;
+    job->done = done;
+    job->total = total;
+    pthread_mutex_unlock(&job->lock);
+}
+
 static void *worker(void *p) {
     Arg *arg = p;
     char *copy = arg->text ? strdup(arg->text) : NULL;
@@ -1092,6 +1100,7 @@ static void *worker(void *p) {
         char err[512] = {0};
         if (!resolve(line, arg->quality, &arg->req, &r, err, sizeof err)) {
             snprintf(last_error, sizeof last_error, "%s", err);
+            job_progress(arg->job, done, total);
             continue;
         }
         set_note(arg->job, r.note);
@@ -1133,13 +1142,11 @@ static void *worker(void *p) {
         }
         if (!ok) {
             snprintf(last_error, sizeof last_error, "%s", err);
+            job_progress(arg->job, done, total);
             continue;
         }
         done++;
-        pthread_mutex_lock(&arg->job->lock);
-        arg->job->done = done;
-        arg->job->total = total;
-        pthread_mutex_unlock(&arg->job->lock);
+        job_progress(arg->job, done, total);
     }
 
     pthread_mutex_lock(&arg->job->lock);
@@ -1175,6 +1182,7 @@ bool ytdlp_start(YtdlpJob *j, int rpc_port, const char *text, const char *dir,
         j->running = true;
         j->done = 0;
         j->total = 0;
+        j->processed = 0;
         j->error[0] = 0;
         j->note[0] = 0;
     }
@@ -1218,12 +1226,13 @@ bool ytdlp_start(YtdlpJob *j, int rpc_port, const char *text, const char *dir,
     return true;
 }
 
-void ytdlp_snapshot(YtdlpJob *j, bool *running, int *done, int *total, char *error, size_t cap,
-                    char *note, size_t note_cap) {
+void ytdlp_snapshot(YtdlpJob *j, bool *running, int *done, int *total, int *processed,
+                    char *error, size_t cap, char *note, size_t note_cap) {
     pthread_mutex_lock(&j->lock);
     if (running) *running = j->running;
     if (done) *done = j->done;
     if (total) *total = j->total;
+    if (processed) *processed = j->processed;
     if (error && cap) snprintf(error, cap, "%s", j->error);
     if (note && note_cap) snprintf(note, note_cap, "%s", j->note);
     pthread_mutex_unlock(&j->lock);

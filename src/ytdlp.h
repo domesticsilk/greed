@@ -24,6 +24,7 @@ typedef struct {
     bool running;
     int done;
     int total;
+    int processed;
     char error[512];
     char note[256];
 } YtdlpJob;
@@ -38,8 +39,8 @@ bool ytdlp_ffmpeg_available(void);
 bool ytdlp_pick_pair(struct json_object *formats, int max_height, int *video, int *audio);
 bool ytdlp_start(YtdlpJob *j, int rpc_port, const char *text, const char *dir,
                  YtdlpQuality quality, const RequestOptions *req);
-void ytdlp_snapshot(YtdlpJob *j, bool *running, int *done, int *total, char *error, size_t cap,
-                    char *note, size_t note_cap);
+void ytdlp_snapshot(YtdlpJob *j, bool *running, int *done, int *total, int *processed,
+                    char *error, size_t cap, char *note, size_t note_cap);
 
 /* Called after every aria2 poll with all parsed rows. Aggregates the hidden
  * audio half into its video row, starts ffmpeg when both halves are done, and

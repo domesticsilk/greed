@@ -58,6 +58,17 @@ typedef struct {
     bool seeder, peer_choking;
 } InfoPeer;
 
+/* One placeholder per link is enough to show the list reacting; a huge paste
+ * keeps the first 32 and lets the rest appear when yt-dlp resolves them. */
+#define PENDING_MAX 32
+
+typedef struct {
+    int id;
+    char label[256];
+    char dir[1024];
+    long long added;
+} PendingRow;
+
 typedef struct {
     Config cfg;
     Config edit;
@@ -160,6 +171,11 @@ typedef struct {
     MarketView mkt;
     YtdlpJob ytdlp;
     bool ytdlp_active;
+    PendingRow pending[PENDING_MAX];
+    int pending_count;
+    int pending_seq;
+    int ytdlp_seen;
+    bool pending_scroll;
     bool add_ytdlp;
     GreedUpdate upd;
     char restart[PATH_MAX];
@@ -1938,11 +1954,48 @@ static void drag_selection(App *a, cui_vec2 mp) {
     else a->selected[0] = 0;
 }
 
+/* Optimistic rows for links that yt-dlp has not resolved yet. One per input
+ * line, removed as the worker reports each line processed. */
+static void pending_add_batch(App *a, const char *text, const char *dir) {
+    a->pending_count = 0;
+    char *copy = strdup(text ? text : "");
+    if (!copy) return;
+    char *save = NULL;
+    for (char *line = strtok_r(copy, "\n", &save); line && a->pending_count < PENDING_MAX;
+         line = strtok_r(NULL, "\n", &save)) {
+        while (*line == ' ' || *line == '\t') line++;
+        size_t len = strlen(line);
+        while (len && (line[len - 1] == ' ' || line[len - 1] == '\r' || line[len - 1] == '\t'))
+            line[--len] = 0;
+        if (!*line) continue;
+        const char *label = strstr(line, "://");
+        label = label ? label + 3 : line;
+        if (!strncmp(label, "www.", 4)) label += 4;
+        PendingRow *p = &a->pending[a->pending_count++];
+        p->id = ++a->pending_seq;
+        snprintf(p->label, sizeof p->label, "%s", label);
+        snprintf(p->dir, sizeof p->dir, "%s", dir ? dir : "");
+        p->added = (long long)time(NULL);
+    }
+    free(copy);
+}
+
+static void pending_drop(App *a, int n) {
+    if (n <= 0) return;
+    if (n >= a->pending_count) {
+        a->pending_count = 0;
+        return;
+    }
+    memmove(a->pending, a->pending + n,
+            (size_t)(a->pending_count - n) * sizeof a->pending[0]);
+    a->pending_count -= n;
+}
+
 static void download_table(App *a, cui_ctx *ui) {
     int rows[512];
     int n = collect_rows(a, rows, 512);
     if (n > 512) n = 512;
-    if (n == 0) {
+    if (n == 0 && a->pending_count == 0) {
         a->row_n = 0;
         a->suppress_click = false;
         a->drag_active = false;
@@ -2000,6 +2053,11 @@ static void download_table(App *a, cui_ctx *ui) {
     bool down = cui_mouse_down(ui, CUI_MOUSE_LEFT);
     bool press = cui_mouse_clicked(ui, CUI_MOUSE_LEFT);
     cui_vec2 mp = cui_mouse_pos(ui);
+    if (a->pending_scroll) {
+        a->pending_scroll = false;
+        float row_h = active_cfg(a)->spacing < 0.96f ? 36.0f : 44.0f;
+        cui_scroll_show(ui, "downloads", "#body", 0, row_h);
+    }
     if (a->drag_active && !down) {
         a->suppress_click = a->drag_moved;
         a->drag_active = false;
@@ -2013,6 +2071,54 @@ static void download_table(App *a, cui_ctx *ui) {
               .compact = active_cfg(a)->spacing < 0.96f, .selectable = true, .sort = &sort,
               .resize = &resize) {
         a->row_n = 0;
+        for (int r = 0; r < a->pending_count; r++) {
+            PendingRow *p = &a->pending[r];
+            char key[32];
+            snprintf(key, sizeof key, "pending-%d", p->id);
+            cui_table_row_ex(ui, false, row_fade(a, key, step));
+            for (int c = 0; c < ncols; c++) {
+                cui_table_cell(ui);
+                switch (col_of[c]) {
+                case GREED_COL_NAME:
+                    cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                        cui_spinner_ex(ui, 12, CUI_SPINNER_ORBIT);
+                        cui_text(ui, p->label, .width = CUI_FILL, .nowrap = true);
+                    }
+                    break;
+                case GREED_COL_SIZE:
+                case GREED_COL_SPEED:
+                case GREED_COL_ETA:
+                case GREED_COL_CONNECTIONS:
+                    cui_text(ui, "n/a", .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
+                             .align = CUI_TEXT_RIGHT, .width = CUI_FILL, .tabular = true);
+                    break;
+                case GREED_COL_PROGRESS:
+                    cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
+                        cui_progress(ui, 0, .height = 6, .width = CUI_FILL,
+                                     .tone = CUI_TONE_TEAL, .indeterminate = true);
+                        cui_text(ui, "--", .size = 11, .color = CUI_COLOR_TEXT_MUTED,
+                                 .nowrap = true, .width = CUI_PX(44 * col_scale),
+                                 .align = CUI_TEXT_RIGHT, .tabular = true);
+                    }
+                    break;
+                case GREED_COL_ADDED: {
+                    char added[32];
+                    fmt_added(added, sizeof added, p->added);
+                    cui_text(ui, added, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
+                             .nowrap = true, .tabular = true);
+                    break;
+                }
+                case GREED_COL_LOCATION:
+                    cui_text(ui, p->dir, .size = 12, .color = CUI_COLOR_TEXT_SECONDARY,
+                             .nowrap = true);
+                    break;
+                case GREED_COL_STATUS:
+                    cui_badge(ui, "Pending", .tone = CUI_TONE_TEAL, .dot = true,
+                              .size = CUI_SIZE_SM);
+                    break;
+                }
+            }
+        }
         for (int r = 0; r < n; r++) {
             Download *d = &a->items[rows[r]];
             bool selected = selection_has(a, d->gid);
@@ -2567,7 +2673,8 @@ static void content(App *a, cui_ctx *ui) {
             cui_search(ui, "filter", a->filter, sizeof a->filter, .placeholder = "Search downloads",
                        .width = CUI_FILL, .autofocus = false);
             char shown[48];
-            snprintf(shown, sizeof shown, "%d shown", collect_rows(a, NULL, 0));
+            snprintf(shown, sizeof shown, "%d shown",
+                     collect_rows(a, NULL, 0) + a->pending_count);
             cui_text(ui, shown, .size = 12, .color = CUI_COLOR_TEXT_MUTED);
             cui_menu(ui, "Columns", .icon = CUI_ICON_SLIDERS_HORIZONTAL, .icon_only = true) {
                 for (int c = 0; c < GREED_COL_COUNT; c++) {
@@ -2737,6 +2844,9 @@ static void add_dialog(App *a, cui_ctx *ui) {
                         set_status(a, "A video task is already running");
                     } else {
                         a->ytdlp_active = true;
+                        a->ytdlp_seen = 0;
+                        pending_add_batch(a, a->add_urls, a->add_dir);
+                        a->pending_scroll = true;
                         a->add_urls[0] = 0;
                         a->add_name[0] = 0;
                         request_options_clear(&a->add_req);
@@ -5018,18 +5128,30 @@ static void frame(cui_ctx *ui, void *user) {
     schedule_tick(a);
     if (a->ytdlp_active) {
         bool running = false;
-        int done = 0, total = 0;
+        int done = 0, total = 0, processed = 0;
         char err[512] = {0};
         char note[256] = {0};
-        ytdlp_snapshot(&a->ytdlp, &running, &done, &total, err, sizeof err, note, sizeof note);
+        ytdlp_snapshot(&a->ytdlp, &running, &done, &total, &processed, err, sizeof err, note,
+                       sizeof note);
+        if (processed > a->ytdlp_seen) {
+            /* A failed resolve drops its row too; the status bar reports it
+             * when the batch ends. Keep the row if per-link retry is added. */
+            pending_drop(a, processed - a->ytdlp_seen);
+            a->ytdlp_seen = processed;
+            a->last_poll = 0;
+            cui_request_redraw(ui);
+        }
         if (!running) {
             a->ytdlp_active = false;
+            a->pending_count = 0;
+            a->ytdlp_seen = 0;
             if (err[0]) set_status(a, "Video links: %s", err);
             else if (done < total)
                 set_status(a, "Added %d of %d video links", done, total);
             else if (note[0]) set_status(a, "%s", note);
             else set_status(a, "Added %d video link%s", done, done == 1 ? "" : "s");
             a->last_poll = 0;
+            cui_request_redraw(ui);
         } else {
             cui_request_wakeup(ui, 0.5f);
         }
