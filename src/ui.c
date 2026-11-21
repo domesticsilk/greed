@@ -2450,10 +2450,32 @@ static void statusbar(App *a, cui_ctx *ui) {
 static void add_dialog(App *a, cui_ctx *ui) {
     if (!a->show_add) return;
     cui_dialog(ui, "Add download", &a->show_add, .width = 560) {
-        cui_label(ui, "Links");
+        cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER) {
+            cui_label(ui, "Links");
+            cui_spacer(ui);
+            if (cui_button(ui, "Open .torrent…", .icon = CUI_ICON_FILE, .size = CUI_SIZE_SM,
+                           .variant = CUI_BUTTON_GHOST)) {
+                char path[PATH_MAX];
+                if (cui_app_file_dialog(NULL,
+                                        &(cui_file_dialog_opts){.kind = CUI_FILE_OPEN,
+                                                                .title = "Open torrent",
+                                                                .filter_name = "Torrent",
+                                                                .filter = "torrent"},
+                                        path, sizeof path)) {
+                    char *text = malloc(sizeof a->add_urls);
+                    if (text) {
+                        snprintf(text, sizeof a->add_urls, "%s", a->add_urls);
+                        size_t used = strlen(text);
+                        snprintf(text + used, sizeof a->add_urls - used, "%s%s", used ? "\n" : "", path);
+                        add_links(a, text, a->add_dir, NULL, a->add_conn);
+                        free(text);
+                    }
+                }
+            }
+        }
         cui_textarea(ui, "links", a->add_urls, sizeof a->add_urls,
                      .placeholder = "One link per line: http, magnet, or .torrent",
-                     .height = 104);
+                     .height = 104, .autofocus = true);
         if (ytdlp_available()) {
             cui_switch(ui, "Resolve video pages with yt-dlp", &a->add_ytdlp);
             if (a->add_ytdlp) {
@@ -2468,7 +2490,7 @@ static void add_dialog(App *a, cui_ctx *ui) {
                     cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
                         cui_muted(ui, "Higher qualities need ffmpeg.");
                         if (cui_button(ui, "Get ffmpeg", .size = CUI_SIZE_SM,
-                                       .variant = CUI_BUTTON_GHOST))
+                                       .variant = CUI_BUTTON_OUTLINE))
                             open_market(a);
                     }
                 }
@@ -2480,7 +2502,7 @@ static void add_dialog(App *a, cui_ctx *ui) {
             cui_row(ui, .width = CUI_FILL, .gap = 8, .align = CUI_ALIGN_CENTER) {
                 cui_muted(ui, "Video pages need yt-dlp.");
                 if (cui_button(ui, "Get yt-dlp", .size = CUI_SIZE_SM,
-                               .variant = CUI_BUTTON_GHOST)) {
+                               .variant = CUI_BUTTON_OUTLINE)) {
                     a->show_add = false;
                     open_market(a);
                 }
@@ -2498,31 +2520,13 @@ static void add_dialog(App *a, cui_ctx *ui) {
                     snprintf(a->add_dir, sizeof a->add_dir, "%s", path);
             }
         }
-        cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_CENTER) {
+        cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_END) {
             cui_input(ui, "add-name", a->add_name, sizeof a->add_name,
-                      .placeholder = "Filename (optional, single link)", .width = CUI_FILL);
+                      .label = "Filename", .placeholder = "Optional, for a single link",
+                      .width = CUI_FILL);
             double conn = a->add_conn;
             if (cui_number(ui, "add-conn", &conn, 1, 16, .label = "Connections", .step = 1))
                 a->add_conn = (int)conn;
-        }
-        if (cui_button(ui, "Open .torrent…", .icon = CUI_ICON_FILE, .size = CUI_SIZE_SM,
-                       .variant = CUI_BUTTON_GHOST)) {
-            char path[PATH_MAX];
-            if (cui_app_file_dialog(NULL,
-                                    &(cui_file_dialog_opts){.kind = CUI_FILE_OPEN,
-                                                            .title = "Open torrent",
-                                                            .filter_name = "Torrent",
-                                                            .filter = "torrent"},
-                                    path, sizeof path)) {
-                char *text = malloc(sizeof a->add_urls);
-                if (text) {
-                    snprintf(text, sizeof a->add_urls, "%s", a->add_urls);
-                    size_t used = strlen(text);
-                    snprintf(text + used, sizeof a->add_urls - used, "%s%s", used ? "\n" : "", path);
-                    add_links(a, text, a->add_dir, NULL, a->add_conn);
-                    free(text);
-                }
-            }
         }
         cui_dialog_footer(ui) {
             if (cui_button(ui, "Cancel", .variant = CUI_BUTTON_GHOST)) a->show_add = false;
