@@ -164,36 +164,47 @@ ctest --output-on-failure
 
 ## AppImage
 
-Download `Greed-x86_64.AppImage` from the
-[latest release](https://github.com/domesticsilk/greed/releases/latest), then:
+Two builds are published:
+
+| Build | Size | Requirements |
+| --- | ---: | --- |
+| `Greed-x86_64.AppImage` | about 21 MB | aria2 and its libraries are bundled |
+| `Greed-x86_64-lite.AppImage` | about 2.1 MB | `aria2` must be installed |
+
+Download the one you want from the
+[latest release](https://github.com/domesticsilk/greed/releases/latest), make it executable and
+run it:
 
 ```sh
 chmod +x Greed-x86_64.AppImage
 ./Greed-x86_64.AppImage
 ```
 
+The lite build uses the `aria2c` in your `PATH`, so install aria2 first. In-app updates install
+the full build.
+
 For a release, build inside an Ubuntu 22.04 rootfs so the binary needs no newer than glibc 2.35:
 
 ```sh
 ./packaging/build-portable.sh
+VARIANT=lite ./packaging/build-portable.sh
 ```
 
 The script downloads the Ubuntu base rootfs once, installs the build dependencies inside it,
 runs the tests, and writes `build/Greed-x86_64.AppImage` with aria2 and its private libraries
-bundled. It needs user namespaces (`unshare -r`), not Docker. Greed itself uses the system
-libcurl, json-c and X11 libraries.
+bundled, or `build/Greed-x86_64-lite.AppImage` without aria2. It needs user namespaces
+(`unshare -r`), not Docker. Greed itself uses the system libcurl, json-c and X11 libraries.
 
 For a quick local build against the bundled Arch binaries, use
 `./packaging/build-appimage.sh` instead. Both scripts download `appimagetool` on first use and
 fall back to extracting it when FUSE is unavailable.
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`, which checks that the tag matches
-`GREED_VERSION`, builds the AppImage, writes `Greed-x86_64.AppImage.sha256`, packages the browser
-extension and publishes the three assets with the release notes from `CHANGELOG.md`. Settings >
-Updates looks for that exact
-name and compares the release tag with `GREED_VERSION` in `src/version.h`; it checks the
-`.sha256` asset before replacing the running file. On distributions without libfuse2, install it
-or start the file with `--appimage-extract-and-run`.
+`GREED_VERSION`, builds both AppImages, writes their `.sha256` files, packages the browser
+extension and publishes the assets with the release notes from `CHANGELOG.md`. Settings > Updates
+looks for the full AppImage name and compares the release tag with `GREED_VERSION` in
+`src/version.h`; it checks the `.sha256` asset before replacing the running file. On
+distributions without libfuse2, install it or start the file with `--appimage-extract-and-run`.
 
 ## Browser extension
 

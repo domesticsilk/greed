@@ -1,7 +1,15 @@
 #!/bin/sh
 # Build the release AppImage inside an Ubuntu 22.04 rootfs, so the result
 # needs no newer than glibc 2.35. Uses user namespaces, no Docker required.
+# VARIANT=full (default) bundles aria2; VARIANT=lite uses the system aria2c.
 set -eu
+
+variant=${VARIANT:-full}
+case "$variant" in
+    full) output=Greed-x86_64.AppImage; lite=0; bundle_deps=1 ;;
+    lite) output=Greed-x86_64-lite.AppImage; lite=1; bundle_deps=0 ;;
+    *) echo "error: unknown VARIANT '$variant' (use full or lite)" >&2; exit 1 ;;
+esac
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cache=${PORTABLE_CACHE:-"$root/build/portable"}
@@ -82,14 +90,18 @@ cmake --build /out/build -j"$(nproc)"
 ctest --test-dir /out/build --output-on-failure
 
 [ -f /out/runtime-x86_64 ] && export APPIMAGE_RUNTIME=/out/runtime-x86_64
-ARIA2_BIN=/usr/bin/aria2c ARIA2_LIB=/usr/lib/x86_64-linux-gnu/libaria2.so.0 \
-    BUNDLE_DEPS=1 BUILD_DIR=/out/build /src/packaging/build-appimage.sh
+BUNDLE_DEPS="${BUNDLE_DEPS:-0}" LITE="${LITE:-0}" \
+    ARIA2_BIN=/usr/bin/aria2c ARIA2_LIB=/usr/lib/x86_64-linux-gnu/libaria2.so.0 \
+    BUILD_DIR=/out/build /src/packaging/build-appimage.sh
 
 echo -n "highest glibc symbol: "
-objdump -T /out/build/AppDir/usr/bin/greed /out/build/AppDir/usr/bin/aria2c |
-    grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
+{
+    objdump -T /out/build/AppDir/usr/bin/greed
+    [ "$LITE" = 1 ] || objdump -T /out/build/AppDir/usr/bin/aria2c
+} | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
 
-if LD_LIBRARY_PATH=/out/build/AppDir/usr/bin/lib ldd /out/build/AppDir/usr/bin/aria2c |
+if [ "$LITE" != 1 ] &&
+    LD_LIBRARY_PATH=/out/build/AppDir/usr/bin/lib ldd /out/build/AppDir/usr/bin/aria2c |
     grep -q 'not found'; then
     echo "error: the bundled aria2 still has unresolved libraries" >&2
     exit 1
@@ -105,9 +117,10 @@ unshare -rmp --fork sh -c "
     mount --bind '$cache/out' '$rootfs/out'
     mount --rbind /dev '$rootfs/dev'
     mount --rbind /sys '$rootfs/sys'
-    chroot '$rootfs' /bin/bash /tmp/portable-build.sh
+    chroot '$rootfs' /usr/bin/env LITE='$lite' BUNDLE_DEPS='$bundle_deps' \
+        /bin/bash /tmp/portable-build.sh
 "
 
-cp "$cache/out/build/Greed-x86_64.AppImage" "$root/build/Greed-x86_64.AppImage.new"
-mv "$root/build/Greed-x86_64.AppImage.new" "$root/build/Greed-x86_64.AppImage"
-ls -l "$root/build/Greed-x86_64.AppImage"
+cp "$cache/out/build/Greed-x86_64.AppImage" "$root/build/$output.new"
+mv "$root/build/$output.new" "$root/build/$output"
+ls -l "$root/build/$output"

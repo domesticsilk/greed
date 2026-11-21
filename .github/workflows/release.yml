@@ -18,8 +18,13 @@ jobs:
           test "v$version" = "$GITHUB_REF_NAME"
       - name: Build the portable AppImage
         run: ./packaging/build-portable.sh
-      - name: Write the SHA-256 file
-        run: (cd build && sha256sum Greed-x86_64.AppImage > Greed-x86_64.AppImage.sha256)
+      - name: Build the lite AppImage
+        run: VARIANT=lite ./packaging/build-portable.sh
+      - name: Write the SHA-256 files
+        run: |
+          cd build
+          sha256sum Greed-x86_64.AppImage > Greed-x86_64.AppImage.sha256
+          sha256sum Greed-x86_64-lite.AppImage > Greed-x86_64-lite.AppImage.sha256
       - name: Package the extension
         run: (cd extension && zip -qr ../build/Greed-extension.zip .)
       - name: Extract the release notes
@@ -36,6 +41,8 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             build/Greed-x86_64.AppImage \
             build/Greed-x86_64.AppImage.sha256 \
+            build/Greed-x86_64-lite.AppImage \
+            build/Greed-x86_64-lite.AppImage.sha256 \
             build/Greed-extension.zip \
             --title "Greed $GITHUB_REF_NAME" \
             --notes-file build/release-notes.md

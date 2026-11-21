@@ -14,21 +14,24 @@ fi
 
 rm -rf "$appdir"
 install -Dm755 "$build/greed" "$appdir/usr/bin/greed"
-aria2_bin=${ARIA2_BIN:-"$root/vendor/aria2/aria2c"}
-aria2_lib=${ARIA2_LIB:-"$root/vendor/aria2/lib/libaria2.so.0"}
-install -Dm755 "$aria2_bin" "$appdir/usr/bin/aria2c"
-install -Dm755 "$aria2_lib" "$appdir/usr/bin/lib/libaria2.so.0"
-# A portable build bundles aria2's non-core libraries next to the binary.
-# rpc.c points only the aria2c child at this folder, so the system libcurl
-# and GL stack never see an older bundled library.
-if [ "${BUNDLE_DEPS:-0}" = 1 ]; then
-    ldd "$aria2_bin" "$aria2_lib" | awk '{print $3}' | grep '^/' | sort -u |
-    while read -r lib; do
-        case "$(basename "$lib")" in
-            libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|libresolv.so.*|ld-linux*) continue ;;
-        esac
-        install -Dm755 "$lib" "$appdir/usr/bin/lib/$(basename "$lib")"
-    done
+# The lite build leaves aria2 to the system, so it contains only Greed.
+if [ "${LITE:-0}" != 1 ]; then
+    aria2_bin=${ARIA2_BIN:-"$root/vendor/aria2/aria2c"}
+    aria2_lib=${ARIA2_LIB:-"$root/vendor/aria2/lib/libaria2.so.0"}
+    install -Dm755 "$aria2_bin" "$appdir/usr/bin/aria2c"
+    install -Dm755 "$aria2_lib" "$appdir/usr/bin/lib/libaria2.so.0"
+    # A portable build bundles aria2's non-core libraries next to the binary.
+    # rpc.c points only the aria2c child at this folder, so the system libcurl
+    # and GL stack never see an older bundled library.
+    if [ "${BUNDLE_DEPS:-0}" = 1 ]; then
+        ldd "$aria2_bin" "$aria2_lib" | awk '{print $3}' | grep '^/' | sort -u |
+        while read -r lib; do
+            case "$(basename "$lib")" in
+                libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|libresolv.so.*|ld-linux*) continue ;;
+            esac
+            install -Dm755 "$lib" "$appdir/usr/bin/lib/$(basename "$lib")"
+        done
+    fi
 fi
 install -Dm644 "$root/packaging/greed.desktop" "$appdir/greed.desktop"
 install -Dm644 "$root/packaging/greed.png" "$appdir/greed.png"

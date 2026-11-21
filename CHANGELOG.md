@@ -48,7 +48,7 @@ First public release.
 ### Packaging
 
 - Portable single-file AppImage built against glibc 2.35, with aria2 and its non-core libraries
-  bundled
+  bundled, plus a lite AppImage that uses the system `aria2c`
 - `.torrent`, `.metalink` and `magnet:` system handlers, single-instance link handoff and drag
   and drop
 - Chromium extension for right-click downloads, with a native messaging helper registered by
