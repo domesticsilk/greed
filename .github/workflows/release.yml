@@ -19,7 +19,7 @@ jobs:
       - name: Build the portable AppImage
         run: ./packaging/build-portable.sh
       - name: Write the SHA-256 file
-        run: sha256sum build/Greed-x86_64.AppImage > build/Greed-x86_64.AppImage.sha256
+        run: (cd build && sha256sum Greed-x86_64.AppImage > Greed-x86_64.AppImage.sha256)
       - name: Package the extension
         run: (cd extension && zip -qr ../build/Greed-extension.zip .)
       - name: Extract the release notes

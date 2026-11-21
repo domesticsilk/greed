@@ -164,6 +164,14 @@ ctest --output-on-failure
 
 ## AppImage
 
+Download `Greed-x86_64.AppImage` from the
+[latest release](https://github.com/domesticsilk/greed/releases/latest), then:
+
+```sh
+chmod +x Greed-x86_64.AppImage
+./Greed-x86_64.AppImage
+```
+
 For a release, build inside an Ubuntu 22.04 rootfs so the binary needs no newer than glibc 2.35:
 
 ```sh
