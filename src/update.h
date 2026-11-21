@@ -23,6 +23,7 @@ typedef struct {
     char version[64];
     char url[2048];
     char sha_url[2048];
+    char sha256[65];
     char error[512];
     char target[PATH_MAX];
 } GreedUpdate;

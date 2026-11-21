@@ -75,6 +75,8 @@ static bool store_save(struct json_object *v) {
 
 bool checksum_parse_hex(const char *text, char *hex, size_t cap) {
     if (!text || cap < 65) return false;
+    /* GitHub's release API reports digests as "sha256:<hex>". */
+    if (!strncmp(text, "sha256:", 7)) text += 7;
     int k = 0;
     for (const char *p = text; *p && k < 64; p++) {
         char ch = *p;

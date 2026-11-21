@@ -97,6 +97,7 @@ static void *check_worker(void *arg) {
 
     int stage = UPD_ERROR;
     char error[512] = {0}, version[64] = {0}, url[2048] = {0}, sha_url[2048] = {0};
+    char sha256[65] = {0};
 
     if (rc != CURLE_OK) {
         snprintf(error, sizeof error, "%s", net_error(rc));
@@ -128,9 +129,14 @@ static void *check_worker(void *arg) {
                     const char *aname = json_object_get_string(name);
                     if (!aname || !json_object_object_get_ex(asset, "browser_download_url", &link))
                         continue;
-                    if (!strcmp(aname, ASSET_NAME))
+                    if (!strcmp(aname, ASSET_NAME)) {
                         snprintf(url, sizeof url, "%s", json_object_get_string(link));
-                    else if (!strcmp(aname, ASSET_NAME ".sha256"))
+                        struct json_object *digest = NULL;
+                        if (json_object_object_get_ex(asset, "digest", &digest)) {
+                            const char *hex = json_object_get_string(digest);
+                            if (hex) checksum_parse_hex(hex, sha256, sizeof sha256);
+                        }
+                    } else if (!strcmp(aname, ASSET_NAME ".sha256"))
                         snprintf(sha_url, sizeof sha_url, "%s", json_object_get_string(link));
                 }
                 if (!url[0]) snprintf(error, sizeof error, "The latest release has no AppImage.");
@@ -147,6 +153,7 @@ static void *check_worker(void *arg) {
     snprintf(u->version, sizeof u->version, "%s", version);
     snprintf(u->url, sizeof u->url, "%s", url);
     snprintf(u->sha_url, sizeof u->sha_url, "%s", sha_url);
+    snprintf(u->sha256, sizeof u->sha256, "%s", sha256);
     snprintf(u->error, sizeof u->error, "%s", error);
     pthread_mutex_unlock(&u->lock);
     return NULL;
@@ -222,17 +229,35 @@ static bool verify_sha256(const char *path, const char *url, char *error, size_t
     return true;
 }
 
+/* The digest rides along with the release JSON, so the common path needs no
+ * second request. The .sha256 asset covers API replies that omit it. */
+static bool verify_download(const char *path, const char *digest, const char *url, char *error,
+                            size_t cap) {
+    if (!digest || !digest[0]) return verify_sha256(path, url, error, cap);
+    char got[65];
+    if (!checksum_hash_file(path, got, sizeof got)) {
+        snprintf(error, cap, "Could not verify the download.");
+        return false;
+    }
+    if (strcmp(digest, got) != 0) {
+        snprintf(error, cap, "The download failed its checksum.");
+        return false;
+    }
+    return true;
+}
+
 /* The download lands next to the target and is renamed into place, so a failed
  * transfer never leaves a half-written executable.
  * shortcut: the GitHub HTTPS connection is the trust boundary, no signature
  * check; add minisign verification if releases are ever signed. */
 static void *download_worker(void *arg) {
     GreedUpdate *u = arg;
-    char target[PATH_MAX], url[2048], sha_url[2048];
+    char target[PATH_MAX], url[2048], sha_url[2048], sha256[65];
     pthread_mutex_lock(&u->lock);
     snprintf(target, sizeof target, "%s", u->target);
     snprintf(url, sizeof url, "%s", u->url);
     snprintf(sha_url, sizeof sha_url, "%s", u->sha_url);
+    snprintf(sha256, sizeof sha256, "%s", u->sha256);
     pthread_mutex_unlock(&u->lock);
 
     char error[512] = {0};
@@ -297,7 +322,7 @@ static void *download_worker(void *arg) {
             } else if (got < sizeof magic || memcmp(magic, "\x7f" "ELF", 4) ||
                        magic[4] != 2 || magic[18] != 0x3E || magic[19] != 0) {
                 snprintf(error, sizeof error, "The downloaded file is not an x86-64 AppImage.");
-            } else if (sha_url[0] && !verify_sha256(tmp, sha_url, error, sizeof error)) {
+            } else if (!verify_download(tmp, sha256, sha_url, error, sizeof error)) {
                 /* error already set */
             } else if (chmod(tmp, 0755) != 0) {
                 snprintf(error, sizeof error, "Could not make the update executable: %s.",

@@ -12,6 +12,10 @@ int main(void) {
         "ba7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD  greed\n",
         hex, sizeof hex));
     assert(!strcmp(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+    assert(checksum_parse_hex(
+        "sha256:ba7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD", hex,
+        sizeof hex));
+    assert(!strcmp(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
     assert(!checksum_parse_hex("ba78", hex, sizeof hex));
     assert(!checksum_parse_hex(
         "zz7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", hex,
