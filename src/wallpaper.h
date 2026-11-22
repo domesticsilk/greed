@@ -17,10 +17,17 @@ typedef struct {
     cui_texture tex;
     int w, h;
     bool loaded;
+    /* Second texture for glass panels: the same image blurred harder. */
+    float glass_blur;
+    cui_texture glass_tex;
+    int glass_w, glass_h;
+    bool glass_loaded;
 } GreedWallpaper;
 
 /* Returns the texture for `path` with `blur` (0..1) applied, or 0. */
 cui_texture greed_wallpaper_get(cui_ctx *ui, GreedWallpaper *wp, const char *path, float blur);
+/* Returns a second texture of `path` blurred for glass panels, or 0. */
+cui_texture greed_wallpaper_glass(cui_ctx *ui, GreedWallpaper *wp, const char *path, float blur);
 void greed_wallpaper_release(cui_ctx *ui, GreedWallpaper *wp);
 
 /* Box-blurs RGBA pixels in place. Exposed for tests. */

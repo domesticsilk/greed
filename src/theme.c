@@ -282,6 +282,7 @@ static void load_theme_file(const char *path) {
     t.glass_tint_alpha = t.material == GREED_MATERIAL_GLASS ? 0.55f : 0.0f;
     t.glass_highlight_alpha = t.material == GREED_MATERIAL_GLASS ? 0.5f : 0.0f;
     t.glass_shadow_alpha = t.material == GREED_MATERIAL_GLASS ? 0.15f : 0.0f;
+    t.glass_blur = t.material == GREED_MATERIAL_GLASS ? 0.6f : 0.0f;
     struct json_object *glass = NULL;
     if (json_object_object_get_ex(root, "glass", &glass) &&
         json_object_is_type(glass, json_type_object)) {
@@ -291,12 +292,15 @@ static void load_theme_file(const char *path) {
         t.glass_highlight_alpha =
             (float)jdouble(glass, "highlight_alpha", t.glass_highlight_alpha);
         t.glass_shadow_alpha = (float)jdouble(glass, "shadow_alpha", t.glass_shadow_alpha);
+        t.glass_blur = (float)jdouble(glass, "blur", t.glass_blur);
         if (t.glass_tint_alpha < 0) t.glass_tint_alpha = 0;
         if (t.glass_tint_alpha > 1) t.glass_tint_alpha = 1;
         if (t.glass_highlight_alpha < 0) t.glass_highlight_alpha = 0;
         if (t.glass_highlight_alpha > 1) t.glass_highlight_alpha = 1;
         if (t.glass_shadow_alpha < 0) t.glass_shadow_alpha = 0;
         if (t.glass_shadow_alpha > 1) t.glass_shadow_alpha = 1;
+        if (t.glass_blur < 0) t.glass_blur = 0;
+        if (t.glass_blur > 1) t.glass_blur = 1;
     }
 
     const char *wallpaper = jstr(root, "wallpaper");
@@ -665,6 +669,8 @@ char *greed_theme_json(const GreedThemeDraft *d, const char *wallpaper_name) {
                                json_object_new_double(d->theme.glass_highlight_alpha));
         json_object_object_add(glass, "shadow_alpha",
                                json_object_new_double(d->theme.glass_shadow_alpha));
+        json_object_object_add(glass, "blur",
+                               json_object_new_double(d->theme.glass_blur));
         json_object_object_add(o, "glass", glass);
     }
     json_color(o, "bg", d->theme.bg);

@@ -49,6 +49,8 @@ int main(void) {
     d.theme.wallpaper_scrim = 0.72f;
     d.theme.surface_alpha = 0.82f;
     d.theme.wallpaper_blur = 0.8f;
+    d.theme.material = GREED_MATERIAL_GLASS;
+    d.theme.glass_blur = 0.45f;
     snprintf(d.wallpaper_src, sizeof d.wallpaper_src, "%s/themes/echidna.jpg",
              GREED_MARKETPLACE_DIR);
     snprintf(d.wallpaper_ext, sizeof d.wallpaper_ext, "jpg");
@@ -59,6 +61,9 @@ int main(void) {
     struct json_object *o = json_tokener_parse(json);
     assert(o);
     assert(fabs(number(o, "wallpaper_blur") - 0.8) < 0.001);
+    struct json_object *glass = NULL;
+    assert(json_object_object_get_ex(o, "glass", &glass));
+    assert(fabs(number(glass, "blur") - 0.45) < 0.001);
     struct json_object *wp = NULL;
     assert(json_object_object_get_ex(o, "wallpaper", &wp));
     assert(!strcmp(json_object_get_string(wp), "blur-test.jpg"));
@@ -80,6 +85,11 @@ int main(void) {
     o = load_json(path);
     assert(fabs(number(o, "wallpaper_blur") - 0.8) < 0.001);
     json_object_put(o);
+    const GreedTheme *loaded = greed_theme_find("Blur Test");
+    assert(loaded);
+    assert(!strcmp(loaded->name, "Blur Test"));
+    assert(loaded->material == GREED_MATERIAL_GLASS);
+    assert(fabs(loaded->glass_blur - 0.45f) < 0.001f);
     char copied[PATH_MAX];
     snprintf(copied, sizeof copied, "%s/greed/themes/blur-test.jpg", tmp);
     assert(access(copied, R_OK) == 0);

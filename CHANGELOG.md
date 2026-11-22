@@ -5,10 +5,12 @@
 ### Interface
 
 - Theme creator with a live preview of the real interface. Edit the palette, add a wallpaper,
-  adjust blur, scrim and panel opacity, fill in author and license details, then save locally
-  or export a submission bundle. No account or token is needed.
+  adjust wallpaper blur, panel blur, scrim and panel opacity, fill in author and license details,
+  then save locally or export a submission bundle. No account or token is needed.
 - Wallpaper blur from 0 to 1, in the theme JSON as `wallpaper_blur`. Greed decodes the image
   once, keeps a reduced copy for live changes and blurs it before uploading the texture.
+- Glass panels blur the wallpaper behind them. `glass.blur` (0 to 1, default 0.6) sets the
+  strength, and the creator has a Panel blur slider in the Glass section.
 - Marketplace Community tab for reviewed creator submissions, marked `"community": true` in the
   same catalog. Community cards show the author and license.
 - Theme packs can ship a wallpaper. Greed cover-crops it behind the interface, paints the theme

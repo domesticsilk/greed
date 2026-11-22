@@ -373,9 +373,10 @@ built-in copy when the network or the catalog is unavailable.
   in Settings > Appearance; Apply takes effect immediately. Removing the active theme falls back
   to Dark Mono.
 - Theme JSON may set `chrome` (`greed` or `macos`) and `material` (`solid` or `glass`), plus a
-  `glass` object with `tint`, `tint_alpha`, `highlight`, `highlight_alpha` and `shadow_alpha`.
-  Liquid Glass uses both. macOS chrome also prefers SF Pro Text/Display, then Inter, when `font`
-  is `default`.
+  `glass` object with `tint`, `tint_alpha`, `highlight`, `highlight_alpha`, `shadow_alpha` and
+  `blur`. `blur` (0 to 1, default 0.6) softens the wallpaper behind the toolbar, sidebar and
+  list. Liquid Glass uses both. macOS chrome also prefers SF Pro Text/Display, then Inter, when
+  `font` is `default`.
 - A theme may also set `wallpaper` (a filename next to the theme JSON), `wallpaper_scrim` (0 to
   1, how strongly the background colour covers the image; default 0.65), `wallpaper_blur` (0 to
   1, how much the image is softened; default 0) and `surface_alpha` (0 to 1, panel opacity;

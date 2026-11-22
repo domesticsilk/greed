@@ -22,8 +22,15 @@ static void drop_texture(cui_ctx *ui, GreedWallpaper *wp) {
     wp->w = wp->h = 0;
 }
 
+static void drop_glass_texture(cui_ctx *ui, GreedWallpaper *wp) {
+    if (wp->glass_tex) cui_image_destroy(ui, wp->glass_tex);
+    wp->glass_tex = 0;
+    wp->glass_w = wp->glass_h = 0;
+}
+
 void greed_wallpaper_release(cui_ctx *ui, GreedWallpaper *wp) {
     drop_texture(ui, wp);
+    drop_glass_texture(ui, wp);
     free(wp->base);
     memset(wp, 0, sizeof *wp);
 }
@@ -145,6 +152,14 @@ void greed_wallpaper_blur_rgba(unsigned char *rgba, int w, int h, float blur) {
     free(line);
 }
 
+static bool ensure_base(GreedWallpaper *wp) {
+    if (!wp->base && !wp->base_failed) {
+        wp->base = decode_small(wp->path, &wp->base_w, &wp->base_h);
+        if (!wp->base) wp->base_failed = true;
+    }
+    return wp->base != NULL;
+}
+
 cui_texture greed_wallpaper_get(cui_ctx *ui, GreedWallpaper *wp, const char *path, float blur) {
     if (!path) path = "";
     if (blur < 0) blur = 0;
@@ -153,6 +168,8 @@ cui_texture greed_wallpaper_get(cui_ctx *ui, GreedWallpaper *wp, const char *pat
 
     if (strcmp(wp->path, path)) {
         drop_texture(ui, wp);
+        drop_glass_texture(ui, wp);
+        wp->glass_loaded = false;
         free(wp->base);
         wp->base = NULL;
         wp->base_w = wp->base_h = 0;
@@ -171,11 +188,7 @@ cui_texture greed_wallpaper_get(cui_ctx *ui, GreedWallpaper *wp, const char *pat
         wp->tex = cui_image_load(ui, path, &wp->w, &wp->h);
         return wp->tex;
     }
-    if (!wp->base && !wp->base_failed) {
-        wp->base = decode_small(path, &wp->base_w, &wp->base_h);
-        if (!wp->base) wp->base_failed = true;
-    }
-    if (!wp->base) {
+    if (!ensure_base(wp)) {
         drop_texture(ui, wp);
         wp->tex = cui_image_load(ui, path, &wp->w, &wp->h);
         return wp->tex;
@@ -194,4 +207,39 @@ cui_texture greed_wallpaper_get(cui_ctx *ui, GreedWallpaper *wp, const char *pat
     wp->w = wp->base_w;
     wp->h = wp->base_h;
     return wp->tex;
+}
+
+cui_texture greed_wallpaper_glass(cui_ctx *ui, GreedWallpaper *wp, const char *path, float blur) {
+    if (!path) path = "";
+    if (blur < 0) blur = 0;
+    if (blur > 1) blur = 1;
+    /* The main texture owns the path and the shared base; load it first. */
+    if (strcmp(wp->path, path)) return 0;
+    if (wp->glass_loaded && wp->glass_blur == blur) return wp->glass_tex;
+
+    wp->glass_loaded = true;
+    wp->glass_blur = blur;
+
+    if (!path[0] || blur <= 0.001f) {
+        drop_glass_texture(ui, wp);
+        return 0;
+    }
+    if (!ensure_base(wp)) {
+        drop_glass_texture(ui, wp);
+        return 0;
+    }
+
+    size_t size = (size_t)wp->base_w * (size_t)wp->base_h * 4;
+    unsigned char *px = malloc(size);
+    if (!px) return wp->glass_tex;
+    memcpy(px, wp->base, size);
+    greed_wallpaper_blur_rgba(px, wp->base_w, wp->base_h, blur);
+    cui_texture tex = cui_image_create(ui, wp->base_w, wp->base_h, px);
+    free(px);
+    if (!tex) return wp->glass_tex;
+    drop_glass_texture(ui, wp);
+    wp->glass_tex = tex;
+    wp->glass_w = wp->base_w;
+    wp->glass_h = wp->base_h;
+    return wp->glass_tex;
 }

@@ -80,7 +80,9 @@ Community.
 - Text colours are checked against the scrimmed worst case. Keep body text at WCAG AA (4.5:1)
   and large text at 3:1.
 - `chrome` can be `greed` or `macos`; `material` can be `solid` or `glass`. Glass adds a `glass`
-  object with `tint`, `tint_alpha`, `highlight`, `highlight_alpha` and `shadow_alpha`.
+  object with `tint`, `tint_alpha`, `highlight`, `highlight_alpha`, `shadow_alpha` and `blur`.
+  `blur` is 0 to 1 and defaults to 0.6; it softens the wallpaper behind the toolbar, sidebar and
+  list, so it needs a wallpaper to show.
 
 ## Image limits
 

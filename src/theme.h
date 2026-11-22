@@ -28,6 +28,7 @@ typedef struct {
     GreedMaterial material;
     uint32_t glass_tint, glass_highlight;
     float glass_tint_alpha, glass_highlight_alpha, glass_shadow_alpha;
+    float glass_blur;      /* backdrop blur behind glass panels, 0..1 */
     /* Optional background image. The path is absolute once loaded. */
     const char *wallpaper;
     float wallpaper_scrim; /* background painted over the image, 0..1 */

@@ -69,6 +69,13 @@ typedef struct {
     long long added;
 } PendingRow;
 
+/* A panel that needs the wallpaper blurred behind it. The rect is kept from
+ * the last frame because the patch has to be drawn before the node tree. */
+typedef struct {
+    cui_rect rect;
+    float radius;
+} GlassPatch;
+
 typedef struct {
     Config cfg;
     Config edit;
@@ -146,6 +153,10 @@ typedef struct {
     bool show_settings;
     bool show_market;
     GreedWallpaper wallpaper;
+    GlassPatch glass_patch[4];
+    int glass_patch_count;
+    GlassPatch glass_patch_next[4];
+    int glass_patch_next_count;
     /* Marketplace theme thumbnails, loaded lazily and kept across redraws. */
     struct {
         char id[64];
@@ -365,9 +376,10 @@ static const GreedTheme *active_theme(App *a) {
 
 static bool mac_chrome(App *a) { return greed_theme_macos(active_theme(a)); }
 
-static bool mac_glass(App *a) {
+/* Glass no longer needs the macOS chrome: the Greed toolbar and sidebar use it too. */
+static bool panel_glass(App *a) {
     const GreedTheme *t = active_theme(a);
-    return greed_theme_macos(t) && t->material == GREED_MATERIAL_GLASS;
+    return t->material == GREED_MATERIAL_GLASS;
 }
 
 static float sidebar_width(App *a) {
@@ -386,6 +398,8 @@ static void apply_theme(cui_ctx *ui, App *a) {
 static void wallpaper_sync(cui_ctx *ui, App *a) {
     const GreedTheme *t = active_theme(a);
     greed_wallpaper_get(ui, &a->wallpaper, t->wallpaper, t->wallpaper_blur);
+    float glass_blur = t->material == GREED_MATERIAL_GLASS ? t->glass_blur : 0.0f;
+    greed_wallpaper_glass(ui, &a->wallpaper, t->wallpaper, glass_blur);
 }
 
 typedef struct {
@@ -394,10 +408,8 @@ typedef struct {
 } WallpaperPaint;
 
 /* Cover-crop the image so it fills the window without stretching. */
-static void paint_wallpaper(cui_ctx *ui, cui_rect r, void *user) {
-    WallpaperPaint *wp = user;
-    if (!wp->tex || wp->w <= 0 || wp->h <= 0 || r.w <= 0 || r.h <= 0) return;
-    float ra = r.w / r.h, ia = (float)wp->w / (float)wp->h;
+static cui_rect wallpaper_uv(cui_rect r, int tw, int th) {
+    float ra = r.w / r.h, ia = (float)tw / (float)th;
     cui_rect uv = {0, 0, 1, 1};
     if (ia > ra) {
         float u = ra / ia;
@@ -406,7 +418,29 @@ static void paint_wallpaper(cui_ctx *ui, cui_rect r, void *user) {
         float v = ia / ra;
         uv = (cui_rect){0, (1 - v) * 0.5f, 1, v};
     }
+    return uv;
+}
+
+static void paint_wallpaper(cui_ctx *ui, cui_rect r, void *user) {
+    WallpaperPaint *wp = user;
+    if (!wp->tex || wp->w <= 0 || wp->h <= 0 || r.w <= 0 || r.h <= 0) return;
+    cui_rect uv = wallpaper_uv(r, wp->w, wp->h);
     cui_draw_image(ui, wp->tex, r, uv, CUI_CORNERS(0), CUI_RGB(0xffffff));
+}
+
+/* Draws the part of the wallpaper under `patch`, so a panel can show a
+ * blurred copy of exactly what sits behind it. */
+static void draw_wallpaper_patch(cui_ctx *ui, cui_texture tex, int tw, int th,
+                                 cui_rect base, cui_rect patch, cui_corners radius) {
+    if (!tex || tw <= 0 || th <= 0 || base.w <= 0 || base.h <= 0 || patch.w <= 0 ||
+        patch.h <= 0)
+        return;
+    cui_rect uv = wallpaper_uv(base, tw, th);
+    uv.x += uv.w * (patch.x - base.x) / base.w;
+    uv.y += uv.h * (patch.y - base.y) / base.h;
+    uv.w *= patch.w / base.w;
+    uv.h *= patch.h / base.h;
+    cui_draw_image(ui, tex, patch, uv, radius, CUI_RGB(0xffffff));
 }
 
 static void apply_theme_name(App *a, const char *name) {
@@ -418,12 +452,21 @@ static void apply_theme_name(App *a, const char *name) {
 }
 
 typedef struct {
-    cui_color top, bottom, line;
+    cui_color top, bottom, line, scrim;
+    cui_texture tex;
+    int tex_w, tex_h;
 } GlassPaint;
 
 static void paint_glass(cui_ctx *ui, cui_rect r, void *user) {
     GlassPaint *g = user;
     if (r.w <= 0 || r.h <= 0) return;
+    if (g->tex && g->tex_w > 0 && g->tex_h > 0) {
+        cui_vec2 vp = cui_viewport_size(ui);
+        draw_wallpaper_patch(ui, g->tex, g->tex_w, g->tex_h,
+                             (cui_rect){0, 0, vp.x, vp.y}, r, CUI_CORNERS(0));
+        if (g->scrim.a > 0)
+            cui_draw_rect(ui, r, CUI_CORNERS(0), g->scrim);
+    }
     cui_draw_rect_gradient(ui, r, CUI_CORNERS(0), g->top, g->bottom);
     if (g->line.a > 0)
         cui_draw_rect(ui, (cui_rect){r.x, r.y, r.w, 1}, CUI_CORNERS(0), g->line);
@@ -432,12 +475,28 @@ static void paint_glass(cui_ctx *ui, cui_rect r, void *user) {
 static GlassPaint glass_fill(App *a, cui_ctx *ui) {
     const GreedTheme *t = active_theme(a);
     cui_color surface = cui_color_of(ui, CUI_COLOR_SURFACE);
-    GlassPaint g = {surface, surface, {0, 0, 0, 0}};
+    GlassPaint g;
+    memset(&g, 0, sizeof g);
+    g.top = g.bottom = surface;
     if (t->material != GREED_MATERIAL_GLASS) return g;
-    cui_color base = cui_mix(surface, CUI_RGB(t->glass_tint), t->glass_tint_alpha);
-    g.top = cui_mix(base, CUI_RGB(t->glass_highlight), t->glass_highlight_alpha * 0.35f);
+    cui_color tint = CUI_RGB(t->glass_tint);
+    cui_color hi = CUI_RGB(t->glass_highlight);
+    cui_color base = cui_mix(surface, tint, t->glass_tint_alpha);
+    g.top = cui_mix(base, hi, t->glass_highlight_alpha * 0.35f);
     g.bottom = base;
-    g.line = cui_alpha(CUI_RGB(t->glass_highlight), t->glass_highlight_alpha * 0.9f);
+    g.line = cui_alpha(hi, t->glass_highlight_alpha * 0.9f);
+    g.tex = a->wallpaper.glass_tex;
+    g.tex_w = a->wallpaper.glass_w;
+    g.tex_h = a->wallpaper.glass_h;
+    if (t->wallpaper && t->wallpaper[0])
+        g.scrim = cui_alpha(CUI_RGB(t->bg), t->wallpaper_scrim);
+    if (t->wallpaper && t->wallpaper[0]) {
+        /* The patch supplies the colour; a translucent tint over it keeps
+         * the blur visible and matches the contrast-checked composite. */
+        g.top = cui_alpha(cui_mix(tint, hi, t->glass_highlight_alpha * 0.35f),
+                          t->glass_tint_alpha);
+        g.bottom = cui_alpha(tint, t->glass_tint_alpha);
+    }
     return g;
 }
 
@@ -1536,36 +1595,43 @@ static void titlebar(App *a, cui_ctx *ui) {
         mac_titlebar(a, ui);
         return;
     }
-    cui_row(ui, .width = CUI_FILL, .height = CUI_PX(46), .bg = CUI_COLOR_SURFACE, .pad_x = 10,
-            .gap = 8, .align = CUI_ALIGN_CENTER) {
-        if (cui_icon_button(ui, CUI_ICON_PANEL_LEFT, .size = CUI_SIZE_SM,
-                            .tooltip = a->sidebar_open ? "Hide sidebar" : "Show sidebar"))
-            a->sidebar_open = !a->sidebar_open;
-        cui_row(ui, .id = "dragzone", .width = CUI_FILL, .height = CUI_FILL, .gap = 8,
-                .align = CUI_ALIGN_CENTER) {
-            cui_icon(ui, CUI_ICON_DOWNLOAD, 18, CUI_COLOR_ACCENT_STRONG);
-            wordmark(a, ui, 15);
+    bool glass = panel_glass(a);
+    GlassPaint g = glass_fill(a, ui);
+    cui_box(ui, .dir = CUI_STACK, .width = CUI_FILL, .height = CUI_PX(46)) {
+        if (glass)
+            cui_canvas(ui, "toolbar-glass", CUI_FILL, CUI_FILL, paint_glass, &g, sizeof g);
+        cui_row(ui, .width = CUI_FILL, .height = CUI_FILL,
+                .bg = glass ? (cui_color){0, 0, 0, 0} : CUI_COLOR_SURFACE, .pad_x = 10,
+                .gap = 8, .align = CUI_ALIGN_CENTER) {
+            if (cui_icon_button(ui, CUI_ICON_PANEL_LEFT, .size = CUI_SIZE_SM,
+                                .tooltip = a->sidebar_open ? "Hide sidebar" : "Show sidebar"))
+                a->sidebar_open = !a->sidebar_open;
+            cui_row(ui, .id = "dragzone", .width = CUI_FILL, .height = CUI_FILL, .gap = 8,
+                    .align = CUI_ALIGN_CENTER) {
+                cui_icon(ui, CUI_ICON_DOWNLOAD, 18, CUI_COLOR_ACCENT_STRONG);
+                wordmark(a, ui, 15);
+            }
+            if (cui_button(ui, "Add", .icon = CUI_ICON_PLUS, .variant = CUI_BUTTON_PRIMARY,
+                           .size = CUI_SIZE_SM))
+                open_add(a);
+            if (cui_icon_button(ui, CUI_ICON_COMMAND, .size = CUI_SIZE_SM,
+                                .tooltip = "Commands (Ctrl K)"))
+                a->show_palette = true;
+            if (cui_icon_button(ui, CUI_ICON_SHOPPING_CART, .size = CUI_SIZE_SM,
+                                .tooltip = "Marketplace"))
+                open_market(a);
+            if (cui_icon_button(ui, CUI_ICON_SETTINGS, .size = CUI_SIZE_SM, .tooltip = "Settings"))
+                open_settings(a);
+            cui_box(ui, .width = CUI_PX(1), .height = CUI_PX(18), .bg = CUI_COLOR_BORDER) {}
+            if (cui_icon_button(ui, CUI_ICON_MINUS, .size = CUI_SIZE_SM, .tooltip = "Minimize"))
+                frame_minimize(&a->frame);
+            bool maximized = frame_is_maximized(&a->frame);
+            if (cui_icon_button(ui, maximized ? CUI_ICON_MINIMIZE_2 : CUI_ICON_MAXIMIZE_2,
+                                .size = CUI_SIZE_SM, .tooltip = maximized ? "Restore" : "Maximize"))
+                frame_toggle_maximize(&a->frame);
+            if (cui_icon_button(ui, CUI_ICON_X, .size = CUI_SIZE_SM, .tooltip = "Close"))
+                cui_app_quit(NULL);
         }
-        if (cui_button(ui, "Add", .icon = CUI_ICON_PLUS, .variant = CUI_BUTTON_PRIMARY,
-                       .size = CUI_SIZE_SM))
-            open_add(a);
-        if (cui_icon_button(ui, CUI_ICON_COMMAND, .size = CUI_SIZE_SM,
-                            .tooltip = "Commands (Ctrl K)"))
-            a->show_palette = true;
-        if (cui_icon_button(ui, CUI_ICON_SHOPPING_CART, .size = CUI_SIZE_SM,
-                            .tooltip = "Marketplace"))
-            open_market(a);
-        if (cui_icon_button(ui, CUI_ICON_SETTINGS, .size = CUI_SIZE_SM, .tooltip = "Settings"))
-            open_settings(a);
-        cui_box(ui, .width = CUI_PX(1), .height = CUI_PX(18), .bg = CUI_COLOR_BORDER) {}
-        if (cui_icon_button(ui, CUI_ICON_MINUS, .size = CUI_SIZE_SM, .tooltip = "Minimize"))
-            frame_minimize(&a->frame);
-        bool maximized = frame_is_maximized(&a->frame);
-        if (cui_icon_button(ui, maximized ? CUI_ICON_MINIMIZE_2 : CUI_ICON_MAXIMIZE_2,
-                            .size = CUI_SIZE_SM, .tooltip = maximized ? "Restore" : "Maximize"))
-            frame_toggle_maximize(&a->frame);
-        if (cui_icon_button(ui, CUI_ICON_X, .size = CUI_SIZE_SM, .tooltip = "Close"))
-            cui_app_quit(NULL);
     }
 }
 
@@ -1607,7 +1673,7 @@ static void sidebar(App *a, cui_ctx *ui, float width) {
     for (int i = 0; i < a->count; i++) cats[download_category(&a->items[i])]++;
     if (a->category && !cats[a->category]) a->category = CAT_NONE;
     bool mac = mac_chrome(a);
-    bool glass = mac_glass(a);
+    bool glass = panel_glass(a);
     GlassPaint g = glass_fill(a, ui);
     /* Fade the contents out in a very narrow panel instead of letting them
      * sit there as a lit sliver after the labels are clipped away. */
@@ -2299,6 +2365,14 @@ static void download_table(App *a, cui_ctx *ui) {
             }
         }
     }
+    if (panel_glass(a)) {
+        cui_rect r = cui_get_rect(ui, cui_make_id(ui, "downloads"));
+        if (r.w > 0 && r.h > 0 && a->glass_patch_next_count < 4) {
+            GlassPatch *p = &a->glass_patch_next[a->glass_patch_next_count++];
+            p->rect = r;
+            p->radius = cui_theme_get(ui)->radius_control;
+        }
+    }
     a->suppress_click = false;
     for (int c = 0; c < ncols; c++) {
         if (col_of[c] == GREED_COL_NAME || widths[c] == widths_before[c]) continue;
@@ -2613,6 +2687,14 @@ static void schedule_page(App *a, cui_ctx *ui, float opacity) {
                                             .tooltip = "Remove schedule"))
                             remove_idx = i;
                     }
+                }
+            }
+            if (panel_glass(a)) {
+                cui_rect r = cui_get_rect(ui, cui_make_id(ui, "scheduled"));
+                if (r.w > 0 && r.h > 0 && a->glass_patch_next_count < 4) {
+                    GlassPatch *p = &a->glass_patch_next[a->glass_patch_next_count++];
+                    p->rect = r;
+                    p->radius = cui_theme_get(ui)->radius_control;
                 }
             }
             if (remove_idx >= 0) {
@@ -3223,7 +3305,14 @@ static void creator_colors_tab(App *a, cui_ctx *ui) {
         }
         int material = t->material == GREED_MATERIAL_GLASS ? 1 : 0;
         if (cui_prop_enum(ui, "Material", material_items, 2, &material)) {
+            bool was_glass = t->material == GREED_MATERIAL_GLASS;
             t->material = material ? GREED_MATERIAL_GLASS : GREED_MATERIAL_SOLID;
+            if (!was_glass && t->material == GREED_MATERIAL_GLASS) {
+                if (t->glass_tint_alpha <= 0) t->glass_tint_alpha = 0.55f;
+                if (t->glass_highlight_alpha <= 0) t->glass_highlight_alpha = 0.5f;
+                if (t->glass_shadow_alpha <= 0) t->glass_shadow_alpha = 0.15f;
+                if (t->glass_blur <= 0) t->glass_blur = 0.6f;
+            }
             a->creator_dirty = true;
         }
     }
@@ -3267,6 +3356,14 @@ static void creator_colors_tab(App *a, cui_ctx *ui) {
         if (cui_prop_float(ui, "Shadow opacity", &t->glass_shadow_alpha, .min = 0, .max = 1,
                            .step = 0.01f))
             a->creator_dirty = true;
+        if (cui_prop_float(ui, "Panel blur", &t->glass_blur, .min = 0, .max = 1,
+                           .step = 0.05f, .disabled = !creator_has_wallpaper(a),
+                           .tooltip = "Blurs the wallpaper behind the toolbar, sidebar and "
+                                      "list. Needs a wallpaper.")) {
+            /* The renderer caches per blur value, so keep the drag to 21 steps. */
+            t->glass_blur = (float)((int)(t->glass_blur * 20 + 0.5f)) / 20;
+            a->creator_dirty = true;
+        }
     }
 
     cui_accordion(ui, "Chart series", &a->creator_series_open) {
@@ -3288,6 +3385,8 @@ typedef struct {
     uint32_t bg;
     float scrim, alpha;
     uint32_t surface, accent, text;
+    cui_texture glass_tex;
+    int glass_w, glass_h;
 } CreatorPreview;
 
 static void creator_preview_paint(cui_ctx *ui, cui_rect r, void *user) {
@@ -3296,10 +3395,14 @@ static void creator_preview_paint(cui_ctx *ui, cui_rect r, void *user) {
     if (p->tex) {
         WallpaperPaint wp = {p->tex, p->w, p->h};
         paint_wallpaper(ui, r, &wp);
-        cui_draw_rect(ui, r, CUI_CORNERS(10), cui_alpha(CUI_RGB(p->bg), p->scrim));
     }
     float pad = r.w * 0.045f;
     cui_rect panel = {r.x + pad, r.y + pad, r.w - pad * 2, r.h - pad * 2};
+    if (p->tex) {
+        draw_wallpaper_patch(ui, p->glass_tex, p->glass_w, p->glass_h, r, panel,
+                             CUI_CORNERS(8));
+        cui_draw_rect(ui, r, CUI_CORNERS(10), cui_alpha(CUI_RGB(p->bg), p->scrim));
+    }
     cui_draw_rect(ui, panel, CUI_CORNERS(8), cui_alpha(CUI_RGB(p->surface), p->alpha));
     float bar = panel.h * 0.08f;
     cui_draw_rect(ui, (cui_rect){panel.x + pad * 0.6f, panel.y + pad * 0.6f,
@@ -3334,7 +3437,8 @@ static void creator_wallpaper_tab(App *a, cui_ctx *ui) {
 
     CreatorPreview p = {a->wallpaper.tex, a->wallpaper.w, a->wallpaper.h, t->bg,
                         t->wallpaper_scrim, t->surface_alpha, t->surface, t->accent,
-                        t->text};
+                        t->text, a->wallpaper.glass_tex, a->wallpaper.glass_w,
+                        a->wallpaper.glass_h};
     cui_canvas(ui, "creator-preview", CUI_FILL, CUI_PX(150), creator_preview_paint, &p,
                sizeof p);
 
@@ -5071,6 +5175,7 @@ static void handle_keys(App *a, cui_ctx *ui) {
 
 static void frame(cui_ctx *ui, void *user) {
     App *a = user;
+    a->glass_patch_next_count = 0;
     apply_theme(ui, a);
     wallpaper_sync(ui, a);
     apply_typography(a, ui);
@@ -5202,6 +5307,15 @@ static void frame(cui_ctx *ui, void *user) {
         cui_vec2 vp = cui_viewport_size(ui);
         WallpaperPaint wp = {a->wallpaper.tex, a->wallpaper.w, a->wallpaper.h};
         paint_wallpaper(ui, (cui_rect){0, 0, vp.x, vp.y}, &wp);
+        /* Glass panels get the harder-blurred copy under their own rect.
+         * The rects are from the last frame, which only shows while a panel
+         * is moving. */
+        for (int i = 0; i < a->glass_patch_count; i++) {
+            GlassPatch *p = &a->glass_patch[i];
+            draw_wallpaper_patch(ui, a->wallpaper.glass_tex, a->wallpaper.glass_w,
+                                 a->wallpaper.glass_h, (cui_rect){0, 0, vp.x, vp.y},
+                                 p->rect, CUI_CORNERS(p->radius));
+        }
         cui_draw_rect(ui, (cui_rect){0, 0, vp.x, vp.y}, CUI_CORNERS(0),
                       cui_alpha(CUI_RGB(theme->bg), theme->wallpaper_scrim));
     }
@@ -5279,6 +5393,8 @@ static void frame(cui_ctx *ui, void *user) {
         cui_overlay_rect(ui, (cui_rect){0, 0, vp.x, vp.y}, 0, cui_alpha(accent, 0.05f),
                          cui_alpha(accent, 0.75f), 2);
     }
+    memcpy(a->glass_patch, a->glass_patch_next, sizeof a->glass_patch);
+    a->glass_patch_count = a->glass_patch_next_count;
 }
 
 int ui_run(const char *initial_links) {
